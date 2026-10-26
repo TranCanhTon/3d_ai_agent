@@ -1,4 +1,6 @@
 #!/usr/bin/env sh
+# Keep bd from writing usage metrics to the home folder on C:.
+export BD_DISABLE_METRICS=1
 # --- BEGIN BEADS INTEGRATION v1.3.1 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then

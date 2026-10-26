@@ -29,8 +29,19 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - `src/shared/events/` the event vocabulary.
 - `src/shared/protocol/` WebSocket contract: `protocol.ts` (types) and `schemas.ts` (zod schemas, `parseClientMessage`, `parseServerMessage`, compile-time checks that schemas match the types).
 - `src/shared/backend/AgentBackend.ts` the interface the browser uses to reach the server.
-- `server/` the Node WebSocket server (phase 2 onwards).
-- `scripts/test.ts` plain Node test script.
+- `src/shared/events/eventPayloads.ts` zod schemas for event `metadata` the client relies on (chat messages, deltas, status, queue).
+- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` until phase 3). Imports `src/shared` with relative `.ts` paths.
+- `src/app/api/session-token/route.ts` gives the browser the token the server writes to `data/session-token` (loopback Host only).
+- `src/client/` `WebSocketAgentBackend.ts` (AgentBackend over WebSocket, acks, timeouts, reconnect) and `backendClient.ts` (singleton + store wiring).
+- `src/state/useWorldStore.ts` Zustand mirror: connection, throttled snapshot, chats per agent, recent events.
+- `src/components/dev/DevConsole.tsx` temporary dev page (replaced in phase 6).
+- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests (tsx).
+
+## Machine constraints (Windows)
+
+- Drive C: is full. Never write anything to C:. The project lives in `D:\3d-ai-agent`; npm uses `.npm-cache/` (project `.npmrc`); temp files go to `.tmp/` (`.claude/settings.local.json` sets TEMP, TMP, NODE_COMPILE_CACHE). When starting processes yourself, set those env vars too.
+- Run `bd` with `BD_DISABLE_METRICS=1`, otherwise it writes usage metrics to `C:\Users\ACER\.beads`.
+- Scripts must work on Windows: no bash-only syntax, no `&` backgrounding, no `export VAR=`.
 
 ## Protocol in one paragraph
 
@@ -39,9 +50,11 @@ First client message: `{ type: "hello", token }`. Then `{ type: "command", id, c
 ## Checks
 
     npm run typecheck   # tsc --noEmit, includes the schema/type sync checks
-    npm run lint        # eslint src scripts
-    npm test            # node --experimental-strip-types scripts/test.ts
-    npm run dev         # Next dev server on http://localhost:3000
+    npm run lint        # eslint src scripts server
+    npm test            # domain tests (node --experimental-strip-types) then server tests (tsx)
+    npm run dev         # web (http://localhost:3000) + server (ws://127.0.0.1:4317)
+    npm run dev:web     # or run them in two terminals
+    npm run dev:server
 
 All three checks must pass before a phase is done. Requires Node 22.6+.
 

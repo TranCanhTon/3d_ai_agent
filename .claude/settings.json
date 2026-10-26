@@ -11,5 +11,8 @@
         "matcher": ""
       }
     ]
+  },
+  "env": {
+    "BD_DISABLE_METRICS": "1"
   }
 }

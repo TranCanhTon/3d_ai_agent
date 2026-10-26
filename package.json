@@ -1,0 +1,45 @@
+{
+  "name": "ai-agent-world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts\"",
+    "dev:web": "next dev",
+    "dev:server": "tsx watch --no-cache server/index.ts",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src scripts server",
+    "test": "node --experimental-strip-types --no-warnings scripts/test.ts && tsx --no-cache scripts/test-server.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
+    "lucide-react": "^1.61.0",
+    "next": "~16.4.3",
+    "react": "~19.3.1",
+    "react-dom": "~19.3.1",
+    "three": "^0.186.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22",
+    "@types/react": "~19.3.0",
+    "@types/react-dom": "~19.3.0",
+    "@types/three": "^0.186.0",
+    "@types/ws": "^8.18.2",
+    "concurrently": "^9.2.5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "~16.4.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  }
+}
