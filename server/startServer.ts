@@ -5,15 +5,18 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import { CONFIG } from "../src/shared/config.ts";
+import { CONFIG, type AgentRunnerKind } from "../src/shared/config.ts";
 import type { AgentEvent } from "../src/shared/events/eventTypes.ts";
 import type { ServerMessage } from "../src/shared/protocol/protocol.ts";
 import { parseClientMessage } from "../src/shared/protocol/schemas.ts";
 import { AgentManager } from "./agents/AgentManager.ts";
 import type { AgentRunnerFactory } from "./agents/AgentRunner.ts";
+import { assertSubscriptionBilling, ClaudeRunner } from "./agents/claude/ClaudeRunner.ts";
 import { EchoRunner } from "./agents/EchoRunner.ts";
+import { PermissionBroker } from "./agents/PermissionBroker.ts";
+import { ensureSandbox } from "./sandbox.ts";
 import { handleCommand } from "./commands.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { World } from "./world/World.ts";
@@ -26,10 +29,21 @@ export interface ServerOptions {
   allowedOrigins: string[];
   helloTimeoutMs?: number;
   pingIntervalMs?: number;
+  /** "claude" (real agents) or "echo" (fake). Defaults to AGENT_RUNNER, then config.agentRunner. */
+  runner?: AgentRunnerKind;
+  /** Overrides the runner entirely (tests). */
   createRunner?: AgentRunnerFactory;
   log?: Logger;
-  /** Root folder of the seeded Sandbox project. */
+  /** Root folder of the seeded Sandbox project. Claude: defaults to config.sandboxRoot (created if missing); echo: the cwd. */
   sandboxRoot?: string;
+  /** This app's own folder, for resolving data paths. Defaults to the cwd. */
+  appRoot?: string;
+}
+
+export function resolveRunnerKind(env: Record<string, string | undefined>): AgentRunnerKind {
+  const value = env.AGENT_RUNNER;
+  if (value === "claude" || value === "echo") return value;
+  return CONFIG.agentRunner;
 }
 
 export interface RunningServer {
@@ -51,9 +65,19 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   const log = options.log ?? consoleLogger;
   const helloTimeoutMs = options.helloTimeoutMs ?? CONFIG.helloTimeoutMs;
   const pingIntervalMs = options.pingIntervalMs ?? CONFIG.pingIntervalMs;
-  const createRunner = options.createRunner ?? ((agent) => new EchoRunner(agent.name));
+  const runnerKind = options.runner ?? resolveRunnerKind(process.env);
+  const appRoot = resolve(options.appRoot ?? process.cwd());
 
   if (!LOOPBACK_HOSTS.has(options.host)) throw new Error(`Refusing to bind to non-loopback host ${options.host}`);
+  // Billing guard: never start Claude agents that would bill an API key.
+  if (runnerKind === "claude" && options.createRunner === undefined) assertSubscriptionBilling(process.env);
+
+  let sandboxRoot = options.sandboxRoot ?? (runnerKind === "claude" ? CONFIG.sandboxRoot : process.cwd());
+  let sandboxIsGit = false;
+  if (runnerKind === "claude") {
+    sandboxRoot = resolve(sandboxRoot);
+    sandboxIsGit = ensureSandbox(sandboxRoot, appRoot);
+  }
 
   // Fresh token on every start. Written for the Next token route; never logged.
   const token = randomBytes(32).toString("hex");
@@ -88,12 +112,37 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     snapshotTimer = setTimeout(publishSnapshot, wait);
   };
 
-  const world = new World({
-    onEvent: (event: AgentEvent) => broadcast({ type: "event", event }),
-    onChange: scheduleSnapshot,
-  });
-  world.seedSandbox(options.sandboxRoot ?? process.cwd());
+  const world = new World(
+    {
+      onEvent: (event: AgentEvent) => broadcast({ type: "event", event }),
+      onChange: scheduleSnapshot,
+    },
+    runnerKind,
+  );
+  world.seedSandbox(sandboxRoot, sandboxIsGit);
+
+  // The broker is created after the manager (it reports status through it); runners are created lazily.
+  let permissions: PermissionBroker | null = null;
+  const broker = () => {
+    if (permissions === null) throw new Error("Permission broker not ready");
+    return permissions;
+  };
+  const createRunner: AgentRunnerFactory =
+    options.createRunner ??
+    (runnerKind === "echo"
+      ? (agent) => new EchoRunner(agent.name)
+      : (agent) =>
+          new ClaudeRunner({
+            agent,
+            broker: broker(),
+            log,
+            recordingsDir: resolve(appRoot, CONFIG.recordingsDir),
+            tempDir: resolve(appRoot, CONFIG.claudeTempDir),
+            configDir: CONFIG.claudeConfigDir,
+            executablePath: CONFIG.claudeExecutablePath,
+          }));
   const agents = new AgentManager(world, createRunner);
+  permissions = new PermissionBroker({ world, setStatus: (id, status, activity) => agents.setStatus(id, status, activity) });
 
   // ── Connections ──
   const unauthorized = (client: Client, reason: string) => {
@@ -133,7 +182,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const { id, command } = parsed.value;
     log(`client #${client.id} → ${command.name}${"agentId" in command.args ? ` ${command.args.agentId}` : ""}`);
     try {
-      const result = handleCommand(command, { world, agents });
+      const result = handleCommand(command, { world, agents, permissions: broker() });
       send(client, { type: "ack", id, ok: true, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -212,7 +261,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     });
   });
   const port = (http.address() as AddressInfo).port;
-  log(`server listening on ws://${options.host}:${port}`);
+  log(`server listening on ws://${options.host}:${port} (runner: ${runnerKind}, sandbox: ${sandboxRoot})`);
 
   let closed: Promise<void> | null = null;
   const close = () => {

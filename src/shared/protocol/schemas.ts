@@ -89,6 +89,7 @@ export const chatAuthorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user") }),
   z.object({ kind: z.literal("agent") }),
   z.object({ kind: z.literal("handoff"), fromAgentId: id }),
+  z.object({ kind: z.literal("tool"), toolName: z.string() }),
   z.object({ kind: z.literal("system") }),
 ]);
 
@@ -102,6 +103,7 @@ export const chatMessageSchema = z.object({
   pinned: z.boolean(),
   status: z.enum(CHAT_MESSAGE_STATUSES),
   createdAt: epochMs,
+  usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() }).optional(),
 });
 
 export const permissionRequestSchema = z.object({
@@ -145,6 +147,8 @@ export const worldSnapshotSchema = z.object({
   links: z.array(commLinkSchema),
   pendingPermissions: z.array(permissionRequestSchema),
   usage: z.object({ limited: z.boolean(), resetsAt: epochMs.nullable() }),
+  auth: z.object({ source: z.string().nullable() }),
+  runner: z.enum(["claude", "echo"]),
 });
 
 // ── Client → server (strict: unknown keys are rejected) ─────────────────────

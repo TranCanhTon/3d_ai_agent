@@ -1,6 +1,7 @@
 // WebSocket contract between the browser and the Node server.
 // schemas.ts holds the matching zod schemas and fails typecheck if they drift.
 
+import type { AgentRunnerKind } from "../config.ts";
 import type { AgentState } from "../domain/agentTypes.ts";
 import type { ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionDecision, PermissionRequest } from "../domain/permissions.ts";
@@ -28,6 +29,11 @@ export interface UsageState {
   resetsAt: number | null;
 }
 
+/** Where the agents' Claude credential comes from, as Claude Code reports it ("none" = claude.ai login). */
+export interface AuthState {
+  source: string | null;
+}
+
 /** Chat history is not included; see getChatHistory. */
 export interface WorldSnapshot {
   serverTime: number;
@@ -37,6 +43,9 @@ export interface WorldSnapshot {
   links: CommLink[];
   pendingPermissions: PermissionRequest[];
   usage: UsageState;
+  auth: AuthState;
+  /** Which runner answers chat messages. */
+  runner: AgentRunnerKind;
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────

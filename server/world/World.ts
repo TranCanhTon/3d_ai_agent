@@ -1,7 +1,7 @@
 // In-memory world state owned by the server (no persistence until a later phase).
 // Mutations go through here so every change can emit events and schedule a snapshot.
 
-import { CONFIG } from "../../src/shared/config.ts";
+import { CONFIG, type AgentRunnerKind } from "../../src/shared/config.ts";
 import type { AgentState } from "../../src/shared/domain/agentTypes.ts";
 import type { ChatMessage } from "../../src/shared/domain/chatTypes.ts";
 import type { PermissionRequest } from "../../src/shared/domain/permissions.ts";
@@ -10,7 +10,7 @@ import { AGENT_ROLES, ROLE_DEFINITIONS } from "../../src/shared/domain/roles.ts"
 import type { Task } from "../../src/shared/domain/taskTypes.ts";
 import type { AgentEvent } from "../../src/shared/events/eventTypes.ts";
 import { makeAgentId, newId } from "../../src/shared/ids.ts";
-import type { CommLink, UsageState, WorldSnapshot } from "../../src/shared/protocol/protocol.ts";
+import type { AuthState, CommLink, UsageState, WorldSnapshot } from "../../src/shared/protocol/protocol.ts";
 
 export type EventInput = Omit<AgentEvent, "id" | "timestamp" | "severity" | "feed"> &
   Partial<Pick<AgentEvent, "severity" | "feed">>;
@@ -28,13 +28,16 @@ export class World {
   links: CommLink[] = [];
   pendingPermissions: PermissionRequest[] = [];
   usage: UsageState = { limited: false, resetsAt: null };
+  auth: AuthState = { source: null };
+  readonly runner: AgentRunnerKind;
 
   private readonly chat = new Map<string, ChatMessage[]>();
   private readonly hooks: WorldHooks;
   readonly now: () => number;
 
-  constructor(hooks: WorldHooks, now: () => number = Date.now) {
+  constructor(hooks: WorldHooks, runner: AgentRunnerKind, now: () => number = Date.now) {
     this.hooks = hooks;
+    this.runner = runner;
     this.now = now;
   }
 
@@ -59,17 +62,25 @@ export class World {
       links: [...this.links],
       pendingPermissions: [...this.pendingPermissions],
       usage: { ...this.usage },
+      auth: { ...this.auth },
+      runner: this.runner,
     };
   }
 
+  getProjectRoot(projectId: string): string {
+    const project = this.projects.get(projectId);
+    if (project === undefined) throw new Error(`Unknown project: ${projectId}`);
+    return project.rootPath;
+  }
+
   /** Seeds the demo project with its 6 agents, idle at their home stations. */
-  seedSandbox(rootPath: string): Project {
+  seedSandbox(rootPath: string, isGitRepo = false): Project {
     const now = this.now();
     const project: Project = {
       id: CONFIG.sandboxProjectId,
       name: "Sandbox",
       rootPath,
-      isGitRepo: false,
+      isGitRepo,
       archived: false,
       createdAt: now,
     };
@@ -127,7 +138,11 @@ export class World {
     return this.chatFor(agentId).find((m) => m.id === messageId);
   }
 
-  updateMessage(agentId: string, messageId: string, patch: Partial<Pick<ChatMessage, "text" | "status" | "pinned">>): ChatMessage {
+  updateMessage(
+    agentId: string,
+    messageId: string,
+    patch: Partial<Pick<ChatMessage, "text" | "status" | "pinned" | "usage">>,
+  ): ChatMessage {
     const list = this.chatFor(agentId);
     const index = list.findIndex((m) => m.id === messageId);
     const current = list[index];

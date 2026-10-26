@@ -1,15 +1,16 @@
 import type { ClientCommand, CommandName } from "../src/shared/protocol/protocol.ts";
 import type { AgentManager } from "./agents/AgentManager.ts";
+import type { PermissionBroker } from "./agents/PermissionBroker.ts";
 import type { World } from "./world/World.ts";
 
 export interface CommandContext {
   world: World;
   agents: AgentManager;
+  permissions: PermissionBroker;
 }
 
 /** Commands that exist in the protocol but are built in a later phase. */
 const NOT_YET: Partial<Record<CommandName, number>> = {
-  respondPermission: 3,
   listFolders: 4,
   createProject: 4,
   archiveProject: 4,
@@ -36,6 +37,9 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
       return null;
     case "getChatHistory":
       return ctx.agents.getChatHistory(command.args.agentId, command.args.before, command.args.limit);
+    case "respondPermission":
+      ctx.permissions.respond(command.args.requestId, command.args.decision);
+      return null;
     default: {
       const phase = NOT_YET[command.name];
       throw new Error(phase === undefined ? `Unknown command: ${command.name}` : `Not implemented until phase ${phase}`);

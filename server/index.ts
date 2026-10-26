@@ -5,12 +5,18 @@ import { CONFIG } from "../src/shared/config.ts";
 import { consoleLogger } from "./log.ts";
 import { startServer } from "./startServer.ts";
 
-const server = await startServer({
-  host: CONFIG.serverHost,
-  port: CONFIG.serverPort,
-  tokenPath: resolve(join(CONFIG.dataDir, CONFIG.sessionTokenFile)),
-  allowedOrigins: CONFIG.allowedOrigins,
-});
+let server: Awaited<ReturnType<typeof startServer>>;
+try {
+  server = await startServer({
+    host: CONFIG.serverHost,
+    port: CONFIG.serverPort,
+    tokenPath: resolve(join(CONFIG.dataDir, CONFIG.sessionTokenFile)),
+    allowedOrigins: CONFIG.allowedOrigins,
+  });
+} catch (error) {
+  consoleLogger(`server failed to start: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 
 let shuttingDown = false;
 const shutdown = (signal: string) => {

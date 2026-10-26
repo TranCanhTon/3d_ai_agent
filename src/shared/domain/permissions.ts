@@ -29,11 +29,20 @@ export interface PermissionRequest {
 export type PermissionDecision = "allow" | "deny";
 export type PermissionVerdict = "allow" | "ask" | "deny";
 
+/** A verdict plus a short reason a person can read. */
+export interface PermissionOutcome {
+  verdict: PermissionVerdict;
+  reason: string;
+}
+
 const RANK: Record<PermissionVerdict, number> = { allow: 0, ask: 1, deny: 2 };
 
-function strictest(...verdicts: PermissionVerdict[]): PermissionVerdict {
-  let result: PermissionVerdict = "allow";
-  for (const v of verdicts) if (RANK[v] > RANK[result]) result = v;
+const outcome = (verdict: PermissionVerdict, reason: string): PermissionOutcome => ({ verdict, reason });
+
+/** The strictest outcome wins; among equals, the first one keeps its reason. */
+function strictest(...outcomes: PermissionOutcome[]): PermissionOutcome {
+  let result = outcome("allow", "allowed");
+  for (const o of outcomes) if (RANK[o.verdict] > RANK[result.verdict]) result = o;
   return result;
 }
 
@@ -50,14 +59,26 @@ export function evaluatePermission(
   input: unknown,
   config: Pick<AppConfig, "git">,
 ): PermissionVerdict {
+  return explainPermission(role, toolName, input, config).verdict;
+}
+
+/** Same rules as evaluatePermission, plus the reason for the verdict. */
+export function explainPermission(
+  role: AgentRole,
+  toolName: string,
+  input: unknown,
+  config: Pick<AppConfig, "git">,
+): PermissionOutcome {
   const definition = ROLE_DEFINITIONS[role];
-  if (!isToolName(toolName) || !definition.allowedTools.includes(toolName)) return "deny";
-  if (ALWAYS_ALLOWED.has(toolName)) return "allow";
-  if (toolName === "Edit" || toolName === "Write") return "ask";
+  if (!isToolName(toolName) || !definition.allowedTools.includes(toolName)) {
+    return outcome("deny", `${toolName} is not available to the ${definition.roleLabel}`);
+  }
+  if (ALWAYS_ALLOWED.has(toolName)) return outcome("allow", `${toolName} is always allowed`);
+  if (toolName === "Edit" || toolName === "Write") return outcome("ask", `${toolName} changes files`);
 
   // Bash
   const command = readBashCommand(input);
-  if (command === null) return "deny";
+  if (command === null) return outcome("deny", "Bash call without a command");
   return evaluateBash(role, command, config.git, 0);
 }
 
@@ -67,18 +88,18 @@ function readBashCommand(input: unknown): string | null {
   return typeof command === "string" ? command : null;
 }
 
-function evaluateBash(role: AgentRole, command: string, policy: GitPolicy, depth: number): PermissionVerdict {
-  if (depth > MAX_NESTING) return "ask";
+function evaluateBash(role: AgentRole, command: string, policy: GitPolicy, depth: number): PermissionOutcome {
+  if (depth > MAX_NESTING) return outcome("ask", "deeply nested shell command");
   const scan = scanShell(command);
-  const verdicts: PermissionVerdict[] = [];
+  const outcomes: PermissionOutcome[] = [];
 
   if (scan.segments.length === 0 || scan.unterminated || scan.hasRedirect || scan.substitutions.length > 0) {
-    verdicts.push("ask");
+    outcomes.push(outcome("ask", "shell command with redirects, substitutions or unclear quoting"));
   }
-  for (const sub of scan.substitutions) verdicts.push(evaluateBash(role, sub, policy, depth + 1));
-  for (const tokens of scan.segments) verdicts.push(evaluateSegment(role, tokens, policy, depth));
+  for (const sub of scan.substitutions) outcomes.push(evaluateBash(role, sub, policy, depth + 1));
+  for (const tokens of scan.segments) outcomes.push(evaluateSegment(role, tokens, policy, depth));
 
-  return strictest(...verdicts);
+  return strictest(...outcomes);
 }
 
 const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd"]);
@@ -88,29 +109,29 @@ function executableName(token: string): string {
   return base.toLowerCase().replace(/\.exe$/, "");
 }
 
-function evaluateSegment(role: AgentRole, tokens: string[], policy: GitPolicy, depth: number): PermissionVerdict {
-  const verdicts: PermissionVerdict[] = [];
+function evaluateSegment(role: AgentRole, tokens: string[], policy: GitPolicy, depth: number): PermissionOutcome {
+  const outcomes: PermissionOutcome[] = [];
 
   // `bash -c "..."` and `eval ...` run their argument as a command.
   const first = tokens[0];
   if (first !== undefined) {
     const exe = executableName(first);
-    if (exe === "eval") verdicts.push(evaluateBash(role, tokens.slice(1).join(" "), policy, depth + 1));
+    if (exe === "eval") outcomes.push(evaluateBash(role, tokens.slice(1).join(" "), policy, depth + 1));
     if (SHELLS.has(exe)) {
       const c = tokens.findIndex((t) => t === "-c" || t === "/c" || t.toLowerCase() === "-command");
       const script = c >= 0 ? tokens[c + 1] : undefined;
-      if (script !== undefined) verdicts.push(evaluateBash(role, script, policy, depth + 1));
+      if (script !== undefined) outcomes.push(evaluateBash(role, script, policy, depth + 1));
     }
   }
 
   // git anywhere in the part counts (`sudo git ...`, `xargs git ...`, `A=1 git ...`).
   const gitIndex = tokens.findIndex((t) => executableName(t) === "git");
-  if (gitIndex === -1) return strictest("ask", ...verdicts);
+  if (gitIndex === -1) return strictest(outcome("ask", "shell command"), ...outcomes);
 
   const before = tokens.slice(0, gitIndex).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
-  if (before.length > 0) verdicts.push("ask");
-  verdicts.push(evaluateGit(role, tokens.slice(gitIndex + 1), policy));
-  return strictest(...verdicts);
+  if (before.length > 0) outcomes.push(outcome("ask", "git run through another command"));
+  outcomes.push(evaluateGit(role, tokens.slice(gitIndex + 1), policy));
+  return strictest(...outcomes);
 }
 
 /** git global options that take a separate value argument. */
@@ -129,7 +150,7 @@ const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "diff", "l
 /** Read-only subcommand options that write files or run external programs. */
 const READ_ONLY_WRITERS = ["--output", "--ext-diff", "--textconv"];
 
-function evaluateGit(role: AgentRole, args: string[], policy: GitPolicy): PermissionVerdict {
+function evaluateGit(role: AgentRole, args: string[], policy: GitPolicy): PermissionOutcome {
   let i = 0;
   let riskyGlobal = false;
   while (i < args.length) {
@@ -141,38 +162,42 @@ function evaluateGit(role: AgentRole, args: string[], policy: GitPolicy): Permis
   }
 
   const sub = args[i];
-  if (sub === undefined) return "ask";
+  if (sub === undefined) return outcome("ask", "git without a subcommand");
   const rest = args.slice(i + 1);
 
-  if (matchesBlockedPattern(sub, rest, policy.blockedPatterns)) return "deny";
+  const blocked = matchesBlockedPattern(sub, rest, policy.blockedPatterns);
+  if (blocked !== null) return outcome("deny", `"git ${blocked}" is blocked for every agent`);
 
-  const floor: PermissionVerdict = riskyGlobal ? "ask" : "allow";
-  const canCommit = ROLE_DEFINITIONS[role].canCommit;
+  const floor = riskyGlobal ? outcome("ask", "git option that can run other programs") : outcome("allow", "allowed");
+  const definition = ROLE_DEFINITIONS[role];
 
   if (sub === "commit") {
-    if (!canCommit) return "deny";
-    return strictest(floor, policy.commitRequiresApproval ? "ask" : "allow");
+    if (!definition.canCommit) return outcome("deny", `only the Software Engineer may commit, not the ${definition.roleLabel}`);
+    return strictest(floor, policy.commitRequiresApproval ? outcome("ask", "commits need approval") : outcome("allow", "commit"));
   }
   if (sub === "push") {
-    if (!canCommit) return "deny";
-    return strictest(floor, policy.pushRequiresApproval ? "ask" : "allow");
+    if (!definition.canCommit) return outcome("deny", `only the Software Engineer may push, not the ${definition.roleLabel}`);
+    return strictest(floor, policy.pushRequiresApproval ? outcome("ask", "pushes need approval") : outcome("allow", "push"));
   }
   if (READ_ONLY_SUBCOMMANDS.has(sub)) {
     const writes = rest.some((a) => READ_ONLY_WRITERS.some((w) => a === w || a.startsWith(`${w}=`)));
-    return strictest(floor, policy.readOnlyRequiresApproval || writes ? "ask" : "allow");
+    if (writes) return outcome("ask", `git ${sub} with an option that writes files or runs programs`);
+    return strictest(floor, policy.readOnlyRequiresApproval ? outcome("ask", "read-only git needs approval") : outcome("allow", "read-only git"));
   }
-  return "ask";
+  return outcome("ask", `git ${sub}`);
 }
 
-function matchesBlockedPattern(sub: string, rest: string[], patterns: string[]): boolean {
+/** Returns the blocked pattern that matches (e.g. "push --force"), or null. */
+function matchesBlockedPattern(sub: string, rest: string[], patterns: string[]): string | null {
   const parsed = patterns.map((p) => p.trim().split(/\s+/)).filter((p) => p[0] === sub);
-  if (parsed.length === 0) return false;
+  if (parsed.length === 0) return null;
 
   const longOptions = parsed.flat().filter((t) => t.startsWith("--"));
   const args = normalizeArgs(sub, rest, longOptions);
-  return parsed.some((tokens) =>
+  const match = parsed.find((tokens) =>
     tokens.slice(1).every((t) => args.has(t) || (t.endsWith(":") && rest.some((a) => a.startsWith(t)))),
   );
+  return match === undefined ? null : match.join(" ");
 }
 
 /**

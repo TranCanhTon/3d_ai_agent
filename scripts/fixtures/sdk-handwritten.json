@@ -1,0 +1,34 @@
+[
+  { "type": "system", "subtype": "init", "session_id": "sess-1", "apiKeySource": "none", "cwd": "D:\\agent-sandbox", "tools": ["Read"], "model": "sonnet", "permissionMode": "default" },
+  { "type": "stream_event", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "u1", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Let me " } } },
+  { "type": "stream_event", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "u2", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "look." } } },
+  { "type": "stream_event", "parent_tool_use_id": "toolu_sub", "session_id": "sess-1", "uuid": "u3", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "subagent text" } } },
+  { "type": "assistant", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "a1", "message": { "role": "assistant", "content": [
+    { "type": "text", "text": "Let me look." },
+    { "type": "tool_use", "id": "t-read", "name": "Read", "input": { "file_path": "D:\\agent-sandbox\\src\\app.ts" } },
+    { "type": "tool_use", "id": "t-grep", "name": "Grep", "input": { "pattern": "TODO" } },
+    { "type": "tool_use", "id": "t-glob", "name": "Glob", "input": { "pattern": "**/*.md" } },
+    { "type": "tool_use", "id": "t-search", "name": "WebSearch", "input": { "query": "zod 4 discriminated union" } },
+    { "type": "tool_use", "id": "t-fetch", "name": "WebFetch", "input": { "url": "https://zod.dev/api?x=1", "prompt": "read" } },
+    { "type": "tool_use", "id": "t-edit", "name": "Edit", "input": { "file_path": "D:\\agent-sandbox\\README.md", "old_string": "a", "new_string": "b" } },
+    { "type": "tool_use", "id": "t-write", "name": "Write", "input": { "file_path": "D:\\agent-sandbox\\hello.txt", "content": "hi" } },
+    { "type": "tool_use", "id": "t-test", "name": "Bash", "input": { "command": "npm test" } },
+    { "type": "tool_use", "id": "t-git", "name": "Bash", "input": { "command": "git status --short" } },
+    { "type": "tool_use", "id": "t-bash", "name": "Bash", "input": { "command": "node -e \"console.log('a very long command that keeps going and going past sixty characters')\"" } }
+  ] } },
+  { "type": "user", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "r1", "message": { "role": "user", "content": [
+    { "type": "tool_result", "tool_use_id": "t-read", "content": "file contents" },
+    { "type": "tool_result", "tool_use_id": "t-bash", "content": "boom", "is_error": true },
+    { "type": "tool_result", "tool_use_id": "t-unknown", "content": "ignored" }
+  ] } },
+  { "type": "result", "subtype": "success", "is_error": false, "num_turns": 3, "result": "All done.", "session_id": "sess-1", "uuid": "res1",
+    "usage": { "input_tokens": 100, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 3, "output_tokens": 45 } },
+  { "type": "result", "subtype": "error_max_turns", "is_error": true, "num_turns": 15, "errors": [], "session_id": "sess-1", "uuid": "res2",
+    "usage": { "input_tokens": 10, "output_tokens": 5 } },
+  { "type": "result", "subtype": "success", "is_error": true, "num_turns": 0, "result": "Not logged in · Please run /login", "session_id": "sess-1", "uuid": "res3",
+    "usage": { "input_tokens": 0, "output_tokens": 0 } },
+  { "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 1, "errors": ["Something went wrong\nstack..."], "session_id": "sess-1", "uuid": "res4",
+    "usage": { "input_tokens": 1, "output_tokens": 1 } },
+  { "type": "rate_limit_event", "session_id": "sess-1", "uuid": "rl1", "rate_limit_info": { "status": "rejected", "resetsAt": 1793030400 } },
+  { "type": "rate_limit_event", "session_id": "sess-1", "uuid": "rl2", "rate_limit_info": { "status": "allowed" } }
+]

@@ -436,6 +436,8 @@ const snapshot: WorldSnapshot = {
     { id: "perm_1", projectId, agentId: engineerId, toolName: "Bash", summary: "git push", input: { command: "git push" }, createdAt: now },
   ],
   usage: { limited: false, resetsAt: null },
+  auth: { source: "none" },
+  runner: "claude",
 };
 
 const EXAMPLE_SERVER_MESSAGES: ServerMessage[] = [

@@ -64,7 +64,23 @@ export interface AppConfig {
   /** React updates from snapshots at most this often, unless an agent's status/busy/queue changed. */
   snapshotThrottleMs: number;
   maxStoredEvents: number;
+
+  // ── Claude agents (phase 3) ──
+  /** Which runner answers chat messages. The AGENT_RUNNER env var overrides it; tests force "echo". */
+  agentRunner: AgentRunnerKind;
+  /** Folder of the seeded Sandbox project. Created and git-initialised if missing. Never this app's repo. */
+  sandboxRoot: string;
+  /** CLAUDE_CONFIG_DIR for the agents' Claude Code (login, sessions, settings). null = Claude's default in the home folder. */
+  claudeConfigDir: string | null;
+  /** Temp folder for the agents' Claude Code process (relative to this app's folder). Keeps temp files off C:. */
+  claudeTempDir: string;
+  /** Raw SDK messages, one JSONL file per run. */
+  recordingsDir: string;
+  /** Explicit Claude Code executable; null = the one bundled with the SDK. */
+  claudeExecutablePath: string | null;
 }
+
+export type AgentRunnerKind = "claude" | "echo";
 
 export const CONFIG: AppConfig = {
   serverHost: "127.0.0.1",
@@ -123,4 +139,11 @@ export const CONFIG: AppConfig = {
   reconnectBackoffMs: [500, 1000, 2000, 5000],
   snapshotThrottleMs: 160,
   maxStoredEvents: 200,
+
+  agentRunner: "claude",
+  sandboxRoot: "D:\\agent-sandbox",
+  claudeConfigDir: "D:\\3d-ai-agent\\.claude-home",
+  claudeTempDir: ".tmp",
+  recordingsDir: "data/recordings",
+  claudeExecutablePath: null,
 };

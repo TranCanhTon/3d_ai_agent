@@ -35,7 +35,16 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - `src/client/` `WebSocketAgentBackend.ts` (AgentBackend over WebSocket, acks, timeouts, reconnect) and `backendClient.ts` (singleton + store wiring).
 - `src/state/useWorldStore.ts` Zustand mirror: connection, throttled snapshot, chats per agent, recent events.
 - `src/components/dev/DevConsole.tsx` temporary dev page (replaced in phase 6).
-- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests (tsx).
+- `server/agents/claude/` the real agents: `ClaudeRunner.ts` (Claude Agent SDK `query()`, billing guard, env, recordings), `translate.ts` (pure SDK message → action mapping), `toolSummary.ts` (tool call descriptions). `server/agents/PermissionBroker.ts` turns "ask" verdicts into permission cards and waits for `respondPermission`. `server/sandbox.ts` prepares `config.sandboxRoot`.
+- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard and ClaudeRunner with a fake SDK (tsx). `npm test` never calls Claude. `npm run test:live` makes one real call.
+
+## Claude agents
+
+- Agents run on the Claude subscription only. The billing guard refuses to start with ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX set, strips every inherited CLAUDE*/ANTHROPIC* variable, and aborts a run whose init reports API key billing.
+- The agents' Claude Code login, sessions and settings live in `config.claudeConfigDir` (`D:\3d-ai-agent\.claude-home`, git-ignored). Log in once with `npm run claude:login` (pick "Claude account with subscription").
+- Every tool call goes through `explainPermission` in a PreToolUse hook ("ask" forces `canUseTool` → PermissionBroker card). Never use the SDK's `allowedTools` (it auto-approves) or a bypass permission mode.
+- No MCP servers, claude.ai connectors or skills are loaded (`strictMcpConfig`, `disableClaudeAiConnectors`, `skills: []`): the connectors add ~300k tokens per run.
+- Raw SDK messages are recorded to `data/recordings/<agent>/<YYYYMMDD-HHmmss>.jsonl`.
 
 ## Machine constraints (Windows)
 
@@ -57,7 +66,8 @@ First client message: `{ type: "hello", token }`. Then `{ type: "command", id, c
 
     npm run typecheck   # tsc --noEmit, includes the schema/type sync checks
     npm run lint        # eslint src scripts server
-    npm test            # domain tests (node --experimental-strip-types) then server tests (tsx)
+    npm test            # domain, server and agent tests (no Claude calls)
+    npm run test:live   # one real Claude call (needs npm run claude:login once)
     npm run dev         # web (http://localhost:3000) + server (ws://127.0.0.1:4317)
     npm run dev:web     # or run them in two terminals
     npm run dev:server

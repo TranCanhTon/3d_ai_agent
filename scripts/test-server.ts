@@ -43,6 +43,7 @@ const server = await startServer({
   allowedOrigins: CONFIG.allowedOrigins,
   helloTimeoutMs: HELLO_TIMEOUT_MS,
   log: silentLogger,
+  runner: "echo", // npm test never calls Claude
 });
 const token = readFileSync(tokenPath, "utf8");
 const url = `ws://127.0.0.1:${server.port}`;
@@ -207,6 +208,7 @@ await check("5. valid hello: snapshot with 1 project and 6 agents", async () => 
   assert.equal(snapshot.snapshot.projects[0]?.name, "Sandbox");
   assert.equal(snapshot.snapshot.agents.length, 6);
   assert.ok(snapshot.snapshot.agents.every((a) => a.status === "idle"));
+  assert.equal(snapshot.snapshot.runner, "echo");
   client.close();
 });
 
@@ -348,7 +350,7 @@ await check("10. an unimplemented command (createProject) mentions phase 4", asy
   const submit = await client.command("submitTask", { projectId, title: "x" });
   assert.ok(!submit.ok && /phase 5/.test(submit.error));
   const permission = await client.command("respondPermission", { requestId: "p", decision: "allow" });
-  assert.ok(!permission.ok && /phase 3/.test(permission.error));
+  assert.ok(!permission.ok && /already answered/.test(permission.error), "respondPermission is implemented");
   client.close();
 });
 
