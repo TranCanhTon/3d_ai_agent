@@ -40,7 +40,7 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 ## Machine constraints (Windows)
 
 - Drive C: is full. Never write anything to C:. The project lives in `D:\3d-ai-agent`; npm uses `.npm-cache/` (project `.npmrc`); temp files go to `.tmp/` (`.claude/settings.local.json` sets TEMP, TMP, NODE_COMPILE_CACHE). When starting processes yourself, set those env vars too.
-- Run `bd` with `BD_DISABLE_METRICS=1`, otherwise it writes usage metrics to `C:\Users\ACER\.beads`.
+- Run `bd` with `BD_DISABLE_METRICS=1` and `BD_DISABLE_EVENT_FLUSH=1`, otherwise it writes to `C:\Users\ACER\.beads`. Both are set in `.claude/settings.json` and the `.beads/hooks`.
 - Scripts must work on Windows: no bash-only syntax, no `&` backgrounding, no `export VAR=`.
 
 ## Protocol in one paragraph

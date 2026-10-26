@@ -13,6 +13,7 @@
     ]
   },
   "env": {
-    "BD_DISABLE_METRICS": "1"
+    "BD_DISABLE_METRICS": "1",
+    "BD_DISABLE_EVENT_FLUSH": "1"
   }
 }
