@@ -7,7 +7,11 @@ import { join } from "node:path";
 import type { HookInput, Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunCallbacks, ToolEvent } from "../server/agents/AgentRunner.ts";
 import { assertSubscriptionBilling, BillingGuardError, buildAgentEnv, ClaudeRunner } from "../server/agents/claude/ClaudeRunner.ts";
+import { addNoteTool } from "../server/agents/claude/notesTool.ts";
+import { describeTool } from "../server/agents/claude/toolSummary.ts";
 import { NOT_LOGGED_IN, translate, type TranslatorAction } from "../server/agents/claude/translate.ts";
+import { buildRolePrompt, CHAT_ONLY_LINE } from "../server/roles/rolePrompts.ts";
+import { AGENT_ROLES, ROLE_DEFINITIONS } from "../src/shared/domain/roles.ts";
 import { DENIED_BY_USER, PermissionBroker, STOPPED_BY_USER } from "../server/agents/PermissionBroker.ts";
 import { silentLogger } from "../server/log.ts";
 import { startServer } from "../server/startServer.ts";
@@ -30,6 +34,7 @@ async function check(name: string, fn: () => void | Promise<void>) {
 }
 
 const ROOT = "D:\\agent-sandbox";
+const ROLES_DIR = join(process.cwd(), "server", "roles");
 const tmpDir = join(process.cwd(), ".tmp", `test-agents-${process.pid}`);
 mkdirSync(tmpDir, { recursive: true });
 
@@ -242,6 +247,7 @@ function runnerOptions(env: Record<string, string | undefined>, query?: unknown)
     log: silentLogger,
     recordingsDir: join(tmpDir, "recordings"),
     tempDir: tmpDir,
+    rolesDir: ROLES_DIR,
     configDir: "D:\\claude-home-test",
     executablePath: null,
     env,
@@ -330,6 +336,10 @@ function recordingCallbacks() {
     onTool: (e) => tools.push(e),
     onAuth: (s) => log.push(`auth:${s}`),
     onUsageLimit: (r) => log.push(`limit:${r}`),
+    addNote: (text) => {
+      log.push(`note:${text}`);
+      return `- ${text} (STD Dren, 2026-01-01)`;
+    },
   };
   return { log, tools, callbacks };
 }
@@ -347,7 +357,7 @@ await check("passes safe SDK options and maps a run to callbacks, recording ever
   const messages = [at(0), at(1), at(2), at(4), at(5), at(6)];
   const runner = new ClaudeRunner(runnerOptions({ PATH: "p" }, fakeQuery(messages, captured)));
   const { log, tools, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "hi", sessionId: "prev-session", cwd: ROOT }, callbacks);
+  runner.run({ agentId: engineer, text: "hi", sessionId: "prev-session", cwd: ROOT, chatOnly: false }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("complete:")));
 
   const o = captured.options;
@@ -363,7 +373,15 @@ await check("passes safe SDK options and maps a run to callbacks, recording ever
   assert.equal(o.allowedTools, undefined, "allowedTools would auto-approve tools");
   assert.equal(o.allowDangerouslySkipPermissions, undefined);
   assert.equal(o.strictMcpConfig, true);
-  assert.deepEqual(o.mcpServers, {});
+  assert.deepEqual(Object.keys(o.mcpServers ?? {}), ["agentworld"], "our notes server is the only tool server");
+  assert.equal((o.mcpServers?.agentworld as { type?: string } | undefined)?.type, "sdk");
+  const prompt = o.systemPrompt as { type: string; preset: string; append: string; snapshot: boolean };
+  assert.equal(prompt.type, "preset");
+  assert.equal(prompt.preset, "claude_code");
+  assert.equal(prompt.snapshot, false, "re-rendered each run so prompt edits reach resumed sessions");
+  assert.ok(prompt.append.startsWith("You are STD Dren"), prompt.append.slice(0, 40));
+  assert.ok(prompt.append.includes(`Project folder: ${ROOT}`));
+  assert.ok(!prompt.append.includes(CHAT_ONLY_LINE));
   assert.deepEqual(o.settings, { disableClaudeAiConnectors: true });
   assert.deepEqual(o.skills, []);
   assert.equal(o.env?.CLAUDE_CONFIG_DIR, "D:\\claude-home-test");
@@ -391,7 +409,7 @@ await check("PreToolUse hook applies our rules to every call: deny, ask (→ can
   const captured: Captured = { options: null };
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(6)], captured)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("complete:")));
   const hook = captured.options?.hooks?.PreToolUse?.[0]?.hooks[0];
   assert.ok(hook !== undefined);
@@ -406,7 +424,9 @@ await check("PreToolUse hook applies our rules to every call: deny, ask (→ can
     return out.hookSpecificOutput?.permissionDecision ?? "none";
   };
   assert.equal(await decision("Bash", { command: "git push --force" }), "deny");
-  assert.equal(await decision("Bash", { command: "git status" }), "ask");
+  assert.equal(await decision("Bash", { command: "git status" }), "none", "read-only git runs without a card");
+  assert.equal(await decision("Bash", { command: "npm install" }), "ask");
+  assert.equal(await decision("mcp__agentworld__add_note", { text: "x" }), "none");
   assert.equal(await decision("Write", { file_path: "a" }), "ask");
   assert.equal(await decision("WebSearch", { query: "x" }), "deny", "not an engineer tool");
   assert.equal(await decision("Read", { file_path: "a" }), "none");
@@ -417,7 +437,7 @@ await check("API key billing reported at init aborts the run with an error", asy
   const init = { ...(at(0) as object), apiKeySource: "ANTHROPIC_API_KEY" } as SDKMessage;
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([init, at(1), at(6)], captured, true)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("error:")));
   await flush();
   assert.ok(captured.options?.abortController?.signal.aborted, "aborted");
@@ -430,7 +450,7 @@ await check("usage limit: onUsageLimit with the reset time and a 'resets at HH:M
   const limitResult = { ...(at(9) as object), result: "Claude AI usage limit reached" } as SDKMessage;
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(10), limitResult], captured)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("error:")));
   assert.ok(log.includes(`limit:${1793030400 * 1000}`));
   assert.ok(log.some((l) => /^error:Usage limit, resets at \d\d:\d\d$/.test(l)), log.join(" | "));
@@ -442,7 +462,7 @@ await check("stop() aborts the query, drops later callbacks and denies pending p
   const options = { ...runnerOptions({}, fakeQuery([at(0), at(1)], captured, true)), broker };
   const runner = new ClaudeRunner(options);
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("delta:")));
   const pending = broker.decide(engineer, "Write", { file_path: "a" });
   await flush();
@@ -453,6 +473,91 @@ await check("stop() aborts the query, drops later callbacks and denies pending p
   const before = log.length;
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(log.length, before, "no callbacks after stop");
+});
+
+await check("chat only: no tools, no tool server, the chat only line, and the hook denies everything", async () => {
+  const captured: Captured = { options: null };
+  const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(6)], captured)));
+  const { log, callbacks } = recordingCallbacks();
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: true }, callbacks);
+  await waitFor(() => log.some((l) => l.startsWith("complete:")));
+  const o = captured.options;
+  assert.ok(o !== null);
+  assert.deepEqual(o.tools, []);
+  assert.deepEqual(o.mcpServers, {});
+  assert.ok((o.systemPrompt as { append: string }).append.endsWith(CHAT_ONLY_LINE));
+  const hook = o.hooks?.PreToolUse?.[0]?.hooks[0];
+  assert.ok(hook !== undefined);
+  const out = (await hook(
+    { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "a" }, tool_use_id: "t", session_id: "s", transcript_path: "", cwd: ROOT } as HookInput,
+    "t",
+    { signal: new AbortController().signal },
+  )) as { hookSpecificOutput?: { permissionDecision?: string } };
+  assert.equal(out.hookSpecificOutput?.permissionDecision, "deny");
+});
+
+// ── Role prompts and add_note ───────────────────────────────────────────────
+console.log("\nRole prompts and add_note");
+
+const SHOP = "D:\\shop";
+
+await check("each role's prompt has its name, the team line with Rabies and the project folder", () => {
+  for (const role of AGENT_ROLES) {
+    const prompt = buildRolePrompt(ROLES_DIR, role, SHOP, false);
+    assert.ok(prompt.startsWith(`You are ${ROLE_DEFINITIONS[role].name}`), role);
+    assert.ok(prompt.includes("Team: sONion Ring (Orchestrator)") && prompt.includes("Rabies (Code Reviewer)."), role);
+    assert.ok(prompt.includes("Shared rules:\nRead .agentworld/notes.md before starting work."), role);
+    assert.ok(prompt.endsWith(`\n\nProject folder: ${SHOP}`), role);
+    assert.ok(!prompt.includes(CHAT_ONLY_LINE));
+  }
+});
+
+await check("chat only adds the chat only line at the end", () => {
+  const prompt = buildRolePrompt(ROLES_DIR, "researcher", SHOP, true);
+  assert.ok(prompt.endsWith(`Project folder: ${SHOP}\n\n${CHAT_ONLY_LINE}`));
+});
+
+await check("role files are copied as given (verdict lines and section markers)", () => {
+  assert.ok(buildRolePrompt(ROLES_DIR, "qa", "x", false).includes("Your last line must be exactly one of:\nVERDICT: PASS\nVERDICT: FAIL"));
+  assert.ok(buildRolePrompt(ROLES_DIR, "reviewer", "x", false).includes("VERDICT: APPROVED\nVERDICT: CHANGES"));
+  assert.ok(buildRolePrompt(ROLES_DIR, "orchestrator", "x", false).includes("End every brief with:\nBRIEF:\n<the brief>"));
+  assert.ok(buildRolePrompt(ROLES_DIR, "engineer", "x", false).includes("Never commit unless the user explicitly asks you to."));
+});
+
+await check("add_note tool: returns the written line, or an error result Claude can read", async () => {
+  const written: string[] = [];
+  const ok = addNoteTool((text) => {
+    written.push(text);
+    return `- ${text} (STD Dren, 2026-01-01)`;
+  });
+  assert.equal(ok.name, "add_note");
+  const result = await ok.handler({ text: "We use Tailwind" }, {});
+  assert.deepEqual(written, ["We use Tailwind"]);
+  assert.equal(result.isError, undefined);
+  assert.match(JSON.stringify(result.content), /Noted: - We use Tailwind/);
+  const failing = addNoteTool(() => {
+    throw new Error("A note cannot be empty");
+  });
+  const error = await failing.handler({ text: " " }, {});
+  assert.equal(error.isError, true);
+  assert.match(JSON.stringify(error.content), /cannot be empty/);
+});
+
+await check("translator and tool summary: mcp__agentworld__add_note is 'Pinning a note' as add_note", () => {
+  assert.deepEqual(describeTool("mcp__agentworld__add_note", { text: "x" }, ROOT), {
+    status: "working",
+    activity: "Pinning a note",
+    line: "Pinned a note",
+  });
+  const actions = one({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_use", id: "tn", name: "mcp__agentworld__add_note", input: { text: "x" } }] },
+  } as unknown as SDKMessage);
+  assert.deepEqual(actions, [
+    { type: "status", status: "working", activity: "Pinning a note" },
+    { type: "toolStarted", toolUseId: "tn", toolName: "add_note", summary: "Pinned a note" },
+  ]);
 });
 
 rmSync(tmpDir, { recursive: true, force: true });

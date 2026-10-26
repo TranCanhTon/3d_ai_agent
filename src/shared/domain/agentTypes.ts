@@ -45,6 +45,8 @@ export interface AgentState {
   location: StationId;
   currentTaskId: string | null;
   claudeSessionId: string | null;
+  /** No tools at all: the agent only answers from what it knows and the conversation. */
+  chatOnly: boolean;
   busy: boolean;
   queuedCount: number;
   lastError: string | null;

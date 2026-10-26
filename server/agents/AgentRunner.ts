@@ -9,6 +9,8 @@ export interface AgentRunInput {
   sessionId: string | null;
   /** The project folder the agent works in. */
   cwd: string;
+  /** No tools at all for this run. */
+  chatOnly: boolean;
 }
 
 export type ToolEvent =
@@ -28,6 +30,8 @@ export interface AgentRunCallbacks {
   onAuth(source: string): void;
   /** Subscription usage limit hit; resetsAt in epoch ms when known. */
   onUsageLimit(resetsAt: number | null): void;
+  /** The add_note tool: appends to the project's notes. Returns the line written; throws on bad input. */
+  addNote(text: string): string;
 }
 
 /**

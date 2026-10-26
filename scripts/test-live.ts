@@ -21,6 +21,8 @@ const agentId = makeAgentId(CONFIG.sandboxProjectId, "orchestrator");
 const tmpDir = join(process.cwd(), ".tmp");
 mkdirSync(tmpDir, { recursive: true });
 const tokenPath = join(tmpDir, `live-session-token-${process.pid}`);
+// A throwaway data folder: the live chat must not end up in the real Sandbox history.
+const dataDir = join(tmpDir, `live-data-${process.pid}`);
 
 const server = await startServer({
   host: "127.0.0.1",
@@ -29,6 +31,7 @@ const server = await startServer({
   allowedOrigins: CONFIG.allowedOrigins,
   runner: "claude",
   log: consoleLogger,
+  dataDir,
 });
 
 const messages: ServerMessage[] = [];
@@ -92,5 +95,6 @@ try {
 } finally {
   await server.close();
   rmSync(tokenPath, { force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

@@ -13,6 +13,7 @@ import type { WorldSnapshot } from "@/shared/protocol/protocol.ts";
 export interface WorldStore {
   connectionStatus: ConnectionStatus;
   snapshot: WorldSnapshot | null;
+  selectedProjectId: string | null;
   selectedAgentId: string | null;
   /** Per agent, oldest first. */
   chats: Record<string, ChatMessage[]>;
@@ -23,6 +24,8 @@ export interface WorldStore {
   setConnectionStatus(status: ConnectionStatus): void;
   applySnapshot(snapshot: WorldSnapshot): void;
   applyEvent(event: AgentEvent): void;
+  /** Also clears the selected agent when it belongs to another project. */
+  setSelectedProject(projectId: string | null): void;
   setSelectedAgent(agentId: string | null): void;
   /** Merges a loaded history page with messages that arrived live. */
   setHistory(agentId: string, messages: ChatMessage[]): void;
@@ -31,8 +34,9 @@ export interface WorldStore {
 }
 
 function snapshotSignature(snapshot: WorldSnapshot): string {
-  const agents = snapshot.agents.map((a) => `${a.id}|${a.status}|${a.busy}|${a.queuedCount}`).join(";");
-  return `${agents}#${snapshot.projects.length}#${snapshot.tasks.length}#${snapshot.pendingPermissions.length}`;
+  const agents = snapshot.agents.map((a) => `${a.id}|${a.status}|${a.busy}|${a.queuedCount}|${a.chatOnly}`).join(";");
+  const projects = snapshot.projects.map((p) => `${p.id}|${p.archived}`).join(";");
+  return `${agents}#${projects}#${snapshot.tasks.length}#${snapshot.pendingPermissions.length}`;
 }
 
 function upsert(list: ChatMessage[] | undefined, message: ChatMessage): ChatMessage[] {
@@ -104,6 +108,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
   return {
     connectionStatus: "closed",
     snapshot: null,
+    selectedProjectId: null,
     selectedAgentId: null,
     chats: {},
     historyLoaded: {},
@@ -130,6 +135,12 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
         events: [event, ...state.events].slice(0, CONFIG.maxStoredEvents),
         chats: applyChatEvent(state.chats, event),
       })),
+
+    setSelectedProject: (selectedProjectId) =>
+      set((state) => {
+        const agent = state.snapshot?.agents.find((a) => a.id === state.selectedAgentId);
+        return { selectedProjectId, selectedAgentId: agent?.projectId === selectedProjectId ? state.selectedAgentId : null };
+      }),
 
     setSelectedAgent: (selectedAgentId) => set({ selectedAgentId }),
 

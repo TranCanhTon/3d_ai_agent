@@ -14,8 +14,8 @@ import {
   type AgentInput,
   type MessageQueue,
 } from "../src/shared/domain/messageQueue.ts";
-import { evaluatePermission, type PermissionVerdict } from "../src/shared/domain/permissions.ts";
-import { AGENT_ROLES, ROLE_DEFINITIONS, type AgentRole } from "../src/shared/domain/roles.ts";
+import { evaluatePermission, explainPermission, type PermissionVerdict } from "../src/shared/domain/permissions.ts";
+import { ADD_NOTE_SDK_NAME, AGENT_ROLES, builtInToolsFor, canonicalToolName, ROLE_DEFINITIONS, type AgentRole } from "../src/shared/domain/roles.ts";
 import type { Task, WorkflowSignal } from "../src/shared/domain/taskTypes.ts";
 import { applySignal, blockTask, canTransition, createTask, isTerminal, unblockTask } from "../src/shared/domain/workflow.ts";
 import type { ClientCommand, ServerMessage, WorldSnapshot } from "../src/shared/protocol/protocol.ts";
@@ -301,7 +301,9 @@ expectBash("engineer", "git push --force", "deny");
 expectBash("engineer", "git reset --hard", "deny");
 expectBash("engineer", "git push origin --delete main", "deny");
 expectBash("engineer", "git status && git push -f", "deny");
-expectBash("engineer", "git diff", "ask");
+expectBash("engineer", "git diff", "allow");
+expectBash("reviewer", "git status", "allow");
+expectBash("qa", "git log --oneline -n 5", "allow");
 expectBash("engineer", "npm test", "ask");
 
 // Robustness: spacing, global options, chains, and spellings of the same command.
@@ -327,6 +329,10 @@ expectBash("engineer", "git log | head", "ask");
 expectBash("qa", "git commit -m x", "deny");
 expectBash("qa", "git checkout -b fix", "ask");
 
+check("read-only git runs without a card by default (config)", () => assert.equal(CONFIG.git.readOnlyRequiresApproval, false));
+const strict: Pick<AppConfig, "git"> = { git: { ...CONFIG.git, readOnlyRequiresApproval: true } };
+expectBash("reviewer", "git status", "ask", strict);
+
 const relaxed: Pick<AppConfig, "git"> = {
   git: { ...CONFIG.git, readOnlyRequiresApproval: false, commitRequiresApproval: true },
 };
@@ -334,6 +340,29 @@ expectBash("reviewer", "git diff HEAD~1", "allow", relaxed);
 expectBash("reviewer", "git log --oneline -n 5", "allow", relaxed);
 expectBash("reviewer", "git diff --output=/tmp/x", "ask", relaxed);
 expectBash("engineer", "git commit -m x", "ask", relaxed);
+
+check("add_note: Claude's prefixed name maps to add_note and is allowed for every role that lists it", () => {
+  assert.equal(canonicalToolName(ADD_NOTE_SDK_NAME), "add_note");
+  assert.equal(ADD_NOTE_SDK_NAME, "mcp__agentworld__add_note");
+  for (const role of AGENT_ROLES) {
+    assert.ok(ROLE_DEFINITIONS[role].allowedTools.includes("add_note"), role);
+    assert.equal(evaluatePermission(role, ADD_NOTE_SDK_NAME, { text: "x" }, CONFIG), "allow", role);
+  }
+});
+check("add_note: denied when the run's tool list does not have it; other MCP tools always denied", () => {
+  assert.equal(evaluatePermission("engineer", ADD_NOTE_SDK_NAME, { text: "x" }, CONFIG, ["Read", "Bash"]), "deny");
+  assert.equal(evaluatePermission("engineer", "mcp__agentworld__other", {}, CONFIG), "deny");
+  assert.equal(evaluatePermission("engineer", "mcp__gmail__send", {}, CONFIG), "deny");
+});
+check("chat only: every tool is denied and no built-in tools are given", () => {
+  for (const tool of ["Read", "Bash", "Edit", ADD_NOTE_SDK_NAME]) {
+    const result = explainPermission("engineer", tool, { command: "ls", file_path: "a" }, CONFIG, []);
+    assert.equal(result.verdict, "deny", tool);
+    assert.match(result.reason, /chat only/);
+  }
+  assert.deepEqual(builtInToolsFor("engineer", true), []);
+  assert.deepEqual(builtInToolsFor("engineer", false), ["Read", "Grep", "Glob", "Edit", "Write", "Bash"]);
+});
 
 // ── 6. Protocol ─────────────────────────────────────────────────────────────
 describe("6. Protocol");
@@ -343,22 +372,25 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "listFolders", args: { path: "/home/me/code" } },
   { name: "createProject", args: { name: "Shop", rootPath: "/home/me/code/shop", initGit: true } },
   { name: "archiveProject", args: { projectId: "proj_1" } },
+  { name: "restoreProject", args: { projectId: "proj_1" } },
   { name: "sendMessage", args: { agentId: "proj_1:engineer", text: "Fix the build" } },
   { name: "cancelQueued", args: { agentId: "proj_1:engineer", messageId: "msg_1" } },
   { name: "stopAgent", args: { agentId: "proj_1:engineer" } },
   { name: "resetAgentSession", args: { agentId: "proj_1:qa" } },
+  { name: "setChatOnly", args: { agentId: "proj_1:qa", chatOnly: true } },
   { name: "submitTask", args: { projectId: "proj_1", title: "Add dark mode", description: "All pages", priority: "high" } },
   { name: "cancelTask", args: { taskId: "task_1" } },
   { name: "resumeTask", args: { taskId: "task_1" } },
   { name: "respondPermission", args: { requestId: "perm_1", decision: "allow" } },
-  { name: "pinToNotes", args: { messageId: "msg_1" } },
+  { name: "pinToNotes", args: { messageId: "msg_1", text: "We always use Tailwind" } },
+  { name: "getNotes", args: { projectId: "proj_1" } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", before: "msg_9", limit: 50 } },
   { name: "getSnapshot", args: {} },
 ];
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 14);
+  assert.equal(names.size, 17);
 });
 
 for (const command of EXAMPLE_COMMANDS) {
@@ -393,6 +425,14 @@ expectRejected(
 );
 expectRejected("hello without token", JSON.stringify({ type: "hello" }));
 expectRejected(
+  "pin text over noteMaxChars",
+  JSON.stringify({ type: "command", id: "c1", command: { name: "pinToNotes", args: { messageId: "m", text: "x".repeat(CONFIG.noteMaxChars + 1) } } }),
+);
+expectRejected(
+  "project name over projectNameMaxChars",
+  JSON.stringify({ type: "command", id: "c1", command: { name: "createProject", args: { name: "x".repeat(CONFIG.projectNameMaxChars + 1), rootPath: "D:\\x" } } }),
+);
+expectRejected(
   "unknown extra field",
   JSON.stringify({ type: "command", id: "c1", command: { name: "stopAgent", args: { agentId: "a", force: true } } }),
 );
@@ -425,6 +465,7 @@ const snapshot: WorldSnapshot = {
     location: ROLE_DEFINITIONS[role].homeStation,
     currentTaskId: null,
     claudeSessionId: null,
+    chatOnly: false,
     busy: false,
     queuedCount: 0,
     lastError: null,

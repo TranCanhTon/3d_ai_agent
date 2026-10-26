@@ -24,8 +24,14 @@ export interface AppConfig {
   notesPath: string;
   noteMaxChars: number;
   dataDir: string;
-  /** The folder browser never goes outside this root. */
-  folderBrowserRoot: "home";
+  /** The folder browser (and every project folder) stays inside this root. */
+  folderBrowserRoot: string;
+  /**
+   * No project may be inside or equal to one of these, or contain one. APP_ROOT
+   * stands for this app's own folder; the server resolves it from process.cwd().
+   */
+  blockedProjectRoots: string[];
+  projectNameMaxChars: number;
   /** The 3D view holds each robot animation at least this long. */
   minStatusDisplayMs: number;
   defaultModel: string;
@@ -52,7 +58,7 @@ export interface AppConfig {
   snapshotCoalesceMs: number;
   /** After finishing an input the agent shows success (or error) this long before idling. */
   resultHoldMs: number;
-  /** Fixed id of the seeded in-memory project, so ids survive server restarts. */
+  /** Fixed id of the Sandbox project created on first start. */
   sandboxProjectId: string;
   /** Temporary echo agent (replaced by the Claude runner in phase 3). */
   echo: { thinkMs: number; wordMs: number };
@@ -78,9 +84,14 @@ export interface AppConfig {
   recordingsDir: string;
   /** Explicit Claude Code executable; null = the one bundled with the SDK. */
   claudeExecutablePath: string | null;
+  /** Role prompt files (relative to this app's folder), read at the start of every run. */
+  rolePromptsDir: string;
 }
 
 export type AgentRunnerKind = "claude" | "echo";
+
+/** Placeholder in blockedProjectRoots for this app's own folder (resolved by the server at runtime). */
+export const APP_ROOT = "<app>";
 
 export const CONFIG: AppConfig = {
   serverHost: "127.0.0.1",
@@ -90,13 +101,15 @@ export const CONFIG: AppConfig = {
   notesPath: ".agentworld/notes.md",
   noteMaxChars: 200,
   dataDir: "./data",
-  folderBrowserRoot: "home",
+  folderBrowserRoot: "D:\\",
+  blockedProjectRoots: [APP_ROOT],
+  projectNameMaxChars: 60,
   minStatusDisplayMs: 1000,
   defaultModel: "sonnet",
   git: {
     commitRequiresApproval: false,
     pushRequiresApproval: true,
-    readOnlyRequiresApproval: true,
+    readOnlyRequiresApproval: false,
     blockedPatterns: [
       "push --force",
       "push -f",
@@ -146,4 +159,5 @@ export const CONFIG: AppConfig = {
   claudeTempDir: ".tmp",
   recordingsDir: "data/recordings",
   claudeExecutablePath: null,
+  rolePromptsDir: "server/roles",
 };

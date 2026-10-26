@@ -12,10 +12,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG } from "../../../src/shared/config.ts";
 import { explainPermission } from "../../../src/shared/domain/permissions.ts";
-import { ROLE_DEFINITIONS, type AgentRole } from "../../../src/shared/domain/roles.ts";
+import { builtInToolsFor, NOTES_TOOL_SERVER, ROLE_DEFINITIONS, type AgentRole } from "../../../src/shared/domain/roles.ts";
 import type { Logger } from "../../log.ts";
+import { buildRolePrompt } from "../../roles/rolePrompts.ts";
 import type { AgentRunCallbacks, AgentRunInput, AgentRunner } from "../AgentRunner.ts";
 import type { PermissionBroker } from "../PermissionBroker.ts";
+import { createNotesServer } from "./notesTool.ts";
 import { classifyErrorText, isApiKeyBilling, translate, type TranslatorAction } from "./translate.ts";
 
 /** If any of these is set, Claude would bill an API key or a cloud account instead of the subscription. */
@@ -83,6 +85,8 @@ export interface ClaudeRunnerOptions {
   /** Absolute folders. */
   recordingsDir: string;
   tempDir: string;
+  /** Folder with the role prompt files. */
+  rolesDir: string;
   configDir: string | null;
   executablePath: string | null;
   env?: Env;
@@ -125,11 +129,22 @@ export class ClaudeRunner implements AgentRunner {
       callbacks.onError(message);
     };
 
+    // Chat only: no built-in tools, no tool server, and the rules deny anything that slips through.
+    const toolOverride = input.chatOnly ? [] : undefined;
+    let rolePrompt: string;
+    try {
+      rolePrompt = buildRolePrompt(this.options.rolesDir, agent.role, input.cwd, input.chatOnly);
+    } catch (error) {
+      log(`${agent.id} role prompt missing: ${error instanceof Error ? error.message : String(error)}`);
+      queueMicrotask(() => fail(`Role prompt could not be read from ${this.options.rolesDir}`));
+      return;
+    }
+
     // Every tool call goes through our rules first. "ask" forces Claude Code to route
     // the call to canUseTool even when it would otherwise auto-approve it.
     const preToolUse = async (hookInput: HookInput): Promise<HookJSONOutput> => {
       if (hookInput.hook_event_name !== "PreToolUse") return {};
-      const outcome = explainPermission(agent.role, hookInput.tool_name, hookInput.tool_input, CONFIG);
+      const outcome = explainPermission(agent.role, hookInput.tool_name, hookInput.tool_input, CONFIG, toolOverride);
       if (outcome.verdict === "allow") return {};
       return {
         hookSpecificOutput: {
@@ -147,20 +162,25 @@ export class ClaudeRunner implements AgentRunner {
       maxTurns: role.maxTurns,
       resume: input.sessionId ?? undefined,
       includePartialMessages: true,
+      // Claude Code's own prompt (keeps its tool instructions) plus the role prompt.
+      // snapshot: false re-renders it every run, so prompt edits and the chat only switch
+      // also reach resumed sessions (a recorded prompt would ignore a new append).
+      systemPrompt: { type: "preset", preset: "claude_code", append: rolePrompt, snapshot: false },
       // Restricts which built-in tools exist; it does not approve them (unlike allowedTools).
-      tools: role.allowedTools.filter((tool) => tool !== "add_note"),
+      tools: builtInToolsFor(agent.role, input.chatOnly),
       permissionMode: "default",
       // Project settings only (loads the project's CLAUDE.md); never the user's settings or allow rules.
       settingSources: ["project"],
-      // No MCP servers at all: not the login's claude.ai connectors (Gmail, Notion, Drive, ...),
-      // not plugin or .mcp.json servers. They add huge tool lists to every prompt and are not ours to use.
-      mcpServers: {},
+      // Our in-process notes server is the only tool server: not the login's claude.ai connectors
+      // (Gmail, Notion, Drive, ...), not plugin or .mcp.json servers. They add huge tool lists to
+      // every prompt and are not ours to use.
+      mcpServers: input.chatOnly ? {} : { [NOTES_TOOL_SERVER]: createNotesServer((text) => callbacks.addNote(text)) },
       strictMcpConfig: true,
       settings: { disableClaudeAiConnectors: true },
-      // Hide skills from the model (the agents get role prompts in a later phase instead).
+      // Hide skills from the model; the role prompt says what to do.
       skills: [],
       hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
-      canUseTool: (toolName, toolInput, { signal }) => broker.decide(agent.id, toolName, toolInput, signal),
+      canUseTool: (toolName, toolInput, { signal }) => broker.decide(agent.id, toolName, toolInput, signal, toolOverride),
       abortController: abort,
       env: this.env,
       pathToClaudeCodeExecutable: this.options.executablePath ?? undefined,

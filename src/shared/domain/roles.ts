@@ -8,6 +8,15 @@ export type AgentRole = (typeof AGENT_ROLES)[number];
 export const TOOL_NAMES = ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebSearch", "WebFetch", "add_note"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
+/** Our in-process tool server; Claude sees its tools as `mcp__<server>__<tool>`. */
+export const NOTES_TOOL_SERVER = "agentworld";
+export const ADD_NOTE_SDK_NAME = `mcp__${NOTES_TOOL_SERVER}__add_note`;
+
+/** Maps the name Claude uses for a tool to ours (`mcp__agentworld__add_note` → `add_note`). */
+export function canonicalToolName(name: string): string {
+  return name === ADD_NOTE_SDK_NAME ? "add_note" : name;
+}
+
 export interface RoleDefinition {
   role: AgentRole;
   /** Default display name for a new agent. Saved agents keep their own name. */
@@ -105,6 +114,11 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     canCommit: false,
   },
 };
+
+/** Built-in Claude Code tools for a run: the role's list without our own tools. Chat only: none. */
+export function builtInToolsFor(role: AgentRole, chatOnly: boolean): ToolName[] {
+  return chatOnly ? [] : ROLE_DEFINITIONS[role].allowedTools.filter((tool) => tool !== "add_note");
+}
 
 export function isAgentRole(value: string): value is AgentRole {
   return (AGENT_ROLES as readonly string[]).includes(value);

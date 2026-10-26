@@ -245,6 +245,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   archiveProject(args: CommandArgsMap["archiveProject"]) {
     return this.run("archiveProject", args);
   }
+  restoreProject(args: CommandArgsMap["restoreProject"]) {
+    return this.run("restoreProject", args);
+  }
   sendMessage(args: CommandArgsMap["sendMessage"]) {
     return this.run("sendMessage", args);
   }
@@ -256,6 +259,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   }
   resetAgentSession(args: CommandArgsMap["resetAgentSession"]) {
     return this.run("resetAgentSession", args);
+  }
+  setChatOnly(args: CommandArgsMap["setChatOnly"]) {
+    return this.run("setChatOnly", args);
   }
   submitTask(args: CommandArgsMap["submitTask"]) {
     return this.run("submitTask", args);
@@ -271,6 +277,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   }
   pinToNotes(args: CommandArgsMap["pinToNotes"]) {
     return this.run("pinToNotes", args);
+  }
+  getNotes(args: CommandArgsMap["getNotes"]) {
+    return this.run("getNotes", args);
   }
   getChatHistory(args: CommandArgsMap["getChatHistory"]) {
     return this.run("getChatHistory", args);

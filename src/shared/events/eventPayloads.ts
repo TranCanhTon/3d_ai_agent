@@ -27,6 +27,8 @@ export const eventPayloadSchemas = {
   permissionResolved: z.object({ requestId: z.string(), decision: z.enum(["allow", "deny"]) }),
   /** usage.limit_reached */
   usageLimit: z.object({ resetsAt: z.number().nullable() }),
+  /** notes.updated: the line appended to the project's notes file. */
+  notesUpdated: z.object({ line: z.string() }),
 };
 
 export type ChatMessagePayload = z.infer<typeof eventPayloadSchemas.chatMessage>;
@@ -37,6 +39,7 @@ export type ToolPayload = z.infer<typeof eventPayloadSchemas.tool>;
 export type PermissionRequestedPayload = z.infer<typeof eventPayloadSchemas.permissionRequested>;
 export type PermissionResolvedPayload = z.infer<typeof eventPayloadSchemas.permissionResolved>;
 export type UsageLimitPayload = z.infer<typeof eventPayloadSchemas.usageLimit>;
+export type NotesUpdatedPayload = z.infer<typeof eventPayloadSchemas.notesUpdated>;
 
 /** Returns the event's metadata if the event has the given type and the metadata matches. */
 export function readPayload<T>(event: AgentEvent, type: AgentEventType | AgentEventType[], schema: z.ZodType<T>): T | null {

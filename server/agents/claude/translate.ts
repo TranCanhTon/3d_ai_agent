@@ -5,6 +5,7 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStatus } from "../../../src/shared/domain/agentTypes.ts";
 import type { TokenUsage } from "../../../src/shared/domain/chatTypes.ts";
+import { canonicalToolName } from "../../../src/shared/domain/roles.ts";
 import { describeTool } from "./toolSummary.ts";
 
 export type ResultErrorKind = "max_turns" | "auth" | "usage_limit" | "execution";
@@ -107,8 +108,9 @@ export function translate(message: SDKMessage, ctx: TranslateContext): Translato
         const b = obj(block);
         if (b?.type !== "tool_use" || typeof b.id !== "string" || typeof b.name !== "string") continue;
         const description = describeTool(b.name, b.input, ctx.rootPath);
+        const toolName = canonicalToolName(b.name);
         actions.push({ type: "status", status: description.status, activity: description.activity });
-        actions.push({ type: "toolStarted", toolUseId: b.id, toolName: b.name, summary: description.line });
+        actions.push({ type: "toolStarted", toolUseId: b.id, toolName, summary: description.line });
       }
       if (m.error === "rate_limit") actions.push({ type: "usageLimit", resetsAt: null });
       return actions;

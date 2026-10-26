@@ -16,9 +16,12 @@ import type { AgentRunnerFactory } from "./agents/AgentRunner.ts";
 import { assertSubscriptionBilling, ClaudeRunner } from "./agents/claude/ClaudeRunner.ts";
 import { EchoRunner } from "./agents/EchoRunner.ts";
 import { PermissionBroker } from "./agents/PermissionBroker.ts";
-import { ensureSandbox } from "./sandbox.ts";
 import { handleCommand } from "./commands.ts";
 import { consoleLogger, type Logger } from "./log.ts";
+import { resolveBlockedRoots, resolveBrowserRoot } from "./projects/folders.ts";
+import { ProjectService } from "./projects/ProjectService.ts";
+import { ensureSandbox } from "./sandbox.ts";
+import { DataStore } from "./store/DataStore.ts";
 import { World } from "./world/World.ts";
 
 export interface ServerOptions {
@@ -34,10 +37,16 @@ export interface ServerOptions {
   /** Overrides the runner entirely (tests). */
   createRunner?: AgentRunnerFactory;
   log?: Logger;
-  /** Root folder of the seeded Sandbox project. Claude: defaults to config.sandboxRoot (created if missing); echo: the cwd. */
+  /** Folder of the Sandbox project created on first start (no saved projects). Defaults to config.sandboxRoot. */
   sandboxRoot?: string;
-  /** This app's own folder, for resolving data paths. Defaults to the cwd. */
+  /** This app's own folder: resolves data paths and APP_ROOT in blockedProjectRoots. Defaults to the cwd. */
   appRoot?: string;
+  /** Where projects, agents and chats are saved. Defaults to config.dataDir inside appRoot. */
+  dataDir?: string;
+  /** Defaults to config.folderBrowserRoot. */
+  folderBrowserRoot?: string;
+  /** Defaults to config.blockedProjectRoots. */
+  blockedProjectRoots?: string[];
 }
 
 export function resolveRunnerKind(env: Record<string, string | undefined>): AgentRunnerKind {
@@ -72,17 +81,14 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   // Billing guard: never start Claude agents that would bill an API key.
   if (runnerKind === "claude" && options.createRunner === undefined) assertSubscriptionBilling(process.env);
 
-  let sandboxRoot = options.sandboxRoot ?? (runnerKind === "claude" ? CONFIG.sandboxRoot : process.cwd());
-  let sandboxIsGit = false;
-  if (runnerKind === "claude") {
-    sandboxRoot = resolve(sandboxRoot);
-    sandboxIsGit = ensureSandbox(sandboxRoot, appRoot);
-  }
+  const dataDir = resolve(appRoot, options.dataDir ?? CONFIG.dataDir);
+  const browserRoot = resolveBrowserRoot(options.folderBrowserRoot ?? CONFIG.folderBrowserRoot);
+  const blockedRoots = resolveBlockedRoots(options.blockedProjectRoots ?? CONFIG.blockedProjectRoots, appRoot);
+  const store = new DataStore(dataDir, log);
 
-  // Fresh token on every start. Written for the Next token route; never logged.
+  // Fresh token on every start, written for the Next token route once the port is ours
+  // (a second instance that fails to bind must not replace the running server's token). Never logged.
   const token = randomBytes(32).toString("hex");
-  mkdirSync(dirname(options.tokenPath), { recursive: true });
-  writeFileSync(options.tokenPath, token, { encoding: "utf8", mode: 0o600 });
   const tokenBuffer = Buffer.from(token, "utf8");
 
   const clients = new Set<Client>();
@@ -118,8 +124,10 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       onChange: scheduleSnapshot,
     },
     runnerKind,
+    Date.now,
+    store,
   );
-  world.seedSandbox(sandboxRoot, sandboxIsGit);
+  const savedQueues = world.load();
 
   // The broker is created after the manager (it reports status through it); runners are created lazily.
   let permissions: PermissionBroker | null = null;
@@ -138,11 +146,26 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
             log,
             recordingsDir: resolve(appRoot, CONFIG.recordingsDir),
             tempDir: resolve(appRoot, CONFIG.claudeTempDir),
+            rolesDir: resolve(appRoot, CONFIG.rolePromptsDir),
             configDir: CONFIG.claudeConfigDir,
             executablePath: CONFIG.claudeExecutablePath,
           }));
-  const agents = new AgentManager(world, createRunner);
+  // The project service needs the manager and the manager writes notes through it: bind late.
+  let projectService: ProjectService | null = null;
+  const agents = new AgentManager(world, createRunner, (agentId, text) => {
+    if (projectService === null) throw new Error("Notes are not available yet");
+    return projectService.addAgentNote(agentId, text);
+  });
+  const projects = new ProjectService({ world, agents, browserRoot, blockedRoots });
+  projectService = projects;
   permissions = new PermissionBroker({ world, setStatus: (id, status, activity) => agents.setStatus(id, status, activity) });
+
+  // First start: the Sandbox becomes a normal saved project.
+  if (world.projects.size === 0) {
+    const sandboxRoot = resolve(options.sandboxRoot ?? CONFIG.sandboxRoot);
+    ensureSandbox(sandboxRoot, appRoot);
+    projects.createProject({ name: "Sandbox", rootPath: sandboxRoot, initGit: true }, CONFIG.sandboxProjectId);
+  }
 
   // ── Connections ──
   const unauthorized = (client: Client, reason: string) => {
@@ -182,7 +205,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const { id, command } = parsed.value;
     log(`client #${client.id} → ${command.name}${"agentId" in command.args ? ` ${command.args.agentId}` : ""}`);
     try {
-      const result = handleCommand(command, { world, agents, permissions: broker() });
+      const result = handleCommand(command, { world, agents, permissions: broker(), projects });
       send(client, { type: "ack", id, ok: true, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -261,7 +284,11 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     });
   });
   const port = (http.address() as AddressInfo).port;
-  log(`server listening on ws://${options.host}:${port} (runner: ${runnerKind}, sandbox: ${sandboxRoot})`);
+  mkdirSync(dirname(options.tokenPath), { recursive: true });
+  writeFileSync(options.tokenPath, token, { encoding: "utf8", mode: 0o600 });
+  // Inputs that were waiting when the server stopped run again (only once this instance owns the port).
+  agents.restoreQueues(savedQueues);
+  log(`server listening on ws://${options.host}:${port} (runner: ${runnerKind}, ${world.projects.size} project(s), data: ${dataDir})`);
 
   let closed: Promise<void> | null = null;
   const close = () => {

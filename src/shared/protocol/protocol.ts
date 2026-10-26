@@ -52,19 +52,25 @@ export interface WorldSnapshot {
 
 /** Arguments of each command. Kept in `args` because createProject has its own `name`. */
 export interface CommandArgsMap {
-  /** Folder browser; defaults to the home directory. */
+  /** Folder browser; defaults to config.folderBrowserRoot and never leaves it. */
   listFolders: { path?: string };
   createProject: { name: string; rootPath: string; initGit?: boolean };
+  /** Hides a project; its data is kept and its agents refuse messages. */
   archiveProject: { projectId: string };
+  restoreProject: { projectId: string };
   sendMessage: { agentId: string; text: string };
   cancelQueued: { agentId: string; messageId: string };
   stopAgent: { agentId: string };
+  /** Only while the agent is not busy. The next message starts a new Claude session. */
   resetAgentSession: { agentId: string };
+  setChatOnly: { agentId: string; chatOnly: boolean };
   submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority };
   cancelTask: { taskId: string };
   resumeTask: { taskId: string };
   respondPermission: { requestId: string; decision: PermissionDecision };
-  pinToNotes: { messageId: string };
+  /** `text` is what I edited from the message (at most noteMaxChars). */
+  pinToNotes: { messageId: string; text: string };
+  getNotes: { projectId: string };
   /** `before` is a message id; returns messages older than it, newest last. */
   getChatHistory: { agentId: string; before?: string; limit?: number };
   getSnapshot: Record<string, never>;
@@ -76,6 +82,10 @@ export interface FolderEntry {
   name: string;
   path: string;
   isGitRepo: boolean;
+  /** A project (archived included) already uses exactly this folder. */
+  hasProject: boolean;
+  /** Why this folder cannot become a project, or null. */
+  blocked: string | null;
 }
 
 export interface FolderListing {
@@ -95,15 +105,19 @@ export interface CommandResultMap {
   listFolders: FolderListing;
   createProject: Project;
   archiveProject: null;
+  restoreProject: null;
   sendMessage: ChatMessage;
   cancelQueued: null;
   stopAgent: null;
   resetAgentSession: null;
+  setChatOnly: null;
   submitTask: Task;
   cancelTask: null;
   resumeTask: null;
   respondPermission: null;
   pinToNotes: null;
+  /** The notes file's content. */
+  getNotes: string;
   getChatHistory: ChatHistoryPage;
   getSnapshot: WorldSnapshot;
 }

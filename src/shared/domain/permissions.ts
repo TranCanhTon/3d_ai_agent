@@ -1,7 +1,8 @@
 // Permission rules for agent tool calls. Pure: no I/O, never throws.
 //
 // Rules, in order:
-// 1. Tool not in the role's allowedTools: deny.
+// 1. Tool not in the role's allowedTools (or the run's override, e.g. none in chat only mode): deny.
+//    Claude's name for our note tool (mcp__agentworld__add_note) counts as add_note.
 // 2. Read, Grep, Glob, WebSearch, WebFetch, add_note: allow.
 // 3. Edit, Write: ask.
 // 4. Bash running git: blocked pattern deny; commit/push by capability;
@@ -13,7 +14,7 @@
 // Anything the scanner is unsure about is at least "ask".
 
 import type { AppConfig, GitPolicy } from "../config.ts";
-import { ROLE_DEFINITIONS, TOOL_NAMES, type AgentRole, type ToolName } from "./roles.ts";
+import { canonicalToolName, ROLE_DEFINITIONS, TOOL_NAMES, type AgentRole, type ToolName } from "./roles.ts";
 
 export interface PermissionRequest {
   id: string;
@@ -58,20 +59,24 @@ export function evaluatePermission(
   toolName: string,
   input: unknown,
   config: Pick<AppConfig, "git">,
+  allowedTools?: readonly ToolName[],
 ): PermissionVerdict {
-  return explainPermission(role, toolName, input, config).verdict;
+  return explainPermission(role, toolName, input, config, allowedTools).verdict;
 }
 
-/** Same rules as evaluatePermission, plus the reason for the verdict. */
+/** Same rules as evaluatePermission, plus the reason for the verdict. `allowedTools` replaces the role's list. */
 export function explainPermission(
   role: AgentRole,
-  toolName: string,
+  rawToolName: string,
   input: unknown,
   config: Pick<AppConfig, "git">,
+  allowedTools?: readonly ToolName[],
 ): PermissionOutcome {
   const definition = ROLE_DEFINITIONS[role];
-  if (!isToolName(toolName) || !definition.allowedTools.includes(toolName)) {
-    return outcome("deny", `${toolName} is not available to the ${definition.roleLabel}`);
+  const toolName = canonicalToolName(rawToolName);
+  const tools = allowedTools ?? definition.allowedTools;
+  if (!isToolName(toolName) || !tools.includes(toolName)) {
+    return outcome("deny", `${toolName} is not available to the ${definition.roleLabel}${allowedTools?.length === 0 ? " in chat only mode" : ""}`);
   }
   if (ALWAYS_ALLOWED.has(toolName)) return outcome("allow", `${toolName} is always allowed`);
   if (toolName === "Edit" || toolName === "Write") return outcome("ask", `${toolName} changes files`);

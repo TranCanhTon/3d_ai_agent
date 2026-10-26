@@ -4,6 +4,7 @@
 
 import { isAbsolute, relative } from "node:path";
 import type { AgentStatus } from "../../../src/shared/domain/agentTypes.ts";
+import { canonicalToolName } from "../../../src/shared/domain/roles.ts";
 
 export interface ToolDescription {
   status: AgentStatus;
@@ -51,8 +52,11 @@ export function isTestCommand(command: string): boolean {
   return TEST_COMMAND.test(command.trim());
 }
 
+/** Accepts Claude's names too (mcp__agentworld__add_note is add_note). */
 export function describeTool(toolName: string, input: unknown, rootPath: string): ToolDescription {
-  switch (toolName) {
+  switch (canonicalToolName(toolName)) {
+    case "add_note":
+      return { status: "working", activity: "Pinning a note", line: "Pinned a note" };
     case "Read": {
       const path = displayPath(str(input, "file_path"), rootPath);
       return { status: "thinking", activity: `Reading ${path}`, line: `Read ${path}` };

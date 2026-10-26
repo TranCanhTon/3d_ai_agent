@@ -3,6 +3,7 @@
 
 import { CONFIG } from "../../src/shared/config.ts";
 import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
+import { ROLE_DEFINITIONS } from "../../src/shared/domain/roles.ts";
 import type { ChatAuthor, ChatMessage, TokenUsage } from "../../src/shared/domain/chatTypes.ts";
 import {
   cancelQueued,
@@ -42,14 +43,60 @@ interface AgentSlot {
   holdTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/** Writes an agent's note (the add_note tool) and returns the line written. Throws on bad input. */
+export type NoteWriter = (agentId: string, text: string) => string;
+
+export const SESSION_RESET_TEXT = "New session started";
+
 export class AgentManager {
   private readonly slots = new Map<string, AgentSlot>();
   private readonly world: World;
   private readonly createRunner: AgentRunnerFactory;
+  private readonly writeNote: NoteWriter;
 
-  constructor(world: World, createRunner: AgentRunnerFactory) {
+  constructor(world: World, createRunner: AgentRunnerFactory, writeNote: NoteWriter = () => { throw new Error("Notes are not available"); }) {
     this.world = world;
     this.createRunner = createRunner;
+    this.writeNote = writeNote;
+  }
+
+  /** Puts saved inputs back in their agents' queues (after a restart) and starts them. */
+  restoreQueues(queues: ReadonlyMap<string, readonly AgentInput[]>): void {
+    for (const [agentId, inputs] of queues) {
+      const slot = this.slot(agentId);
+      slot.queue = { current: null, queued: [...inputs] };
+      this.syncQueueFields(agentId);
+      this.startNextIfIdle(agentId);
+    }
+  }
+
+  /** Archiving: ends every running input of the project. Queued inputs wait until it is restored. */
+  stopProject(projectId: string): void {
+    for (const agent of this.world.agents.values()) {
+      if (agent.projectId === projectId) this.stopAgent(agent.id);
+    }
+  }
+
+  /** Restoring: agents pick up their queued inputs again. */
+  resumeProject(projectId: string): void {
+    for (const agent of [...this.world.agents.values()]) {
+      if (agent.projectId === projectId) this.startNextIfIdle(agent.id);
+    }
+  }
+
+  /** Forgets the Claude session; the next input starts a new one. Refused while the agent is busy. */
+  resetSession(agentId: string): void {
+    const agent = this.world.getAgent(agentId);
+    if (isBusy(this.slot(agentId).queue) || agent.busy) throw new Error(`${agent.name} is busy; stop it first`);
+    this.world.updateAgent(agentId, { claudeSessionId: null });
+    const note = this.createMessage(agentId, { kind: "system" }, SESSION_RESET_TEXT, "complete", null);
+    this.emitMessageCreated(agentId, note, SESSION_RESET_TEXT);
+    this.world.emit({ type: "agent.session_reset", projectId: agent.projectId, agentId, message: `${agent.name}: new session` });
+  }
+
+  /** Takes effect from the next input. */
+  setChatOnly(agentId: string, chatOnly: boolean): void {
+    this.world.updateAgent(agentId, { chatOnly });
   }
 
   /** Creates the user's message and runs it now, or queues it while the agent is busy. */
@@ -92,6 +139,7 @@ export class AgentManager {
     this.clearHold(slot);
     this.endStreamingSegment(agentId, " [stopped]", "error");
     this.endOpenToolLines(agentId);
+    this.completeInputMessage(agentId, slot.queue.current);
     slot.queue = finishCurrent(slot.queue);
     this.world.emit({ type: "agent.stopped", projectId: agent.projectId, agentId, message: `${agent.name} was stopped`, severity: "warning" });
     this.setIdle(agentId);
@@ -135,11 +183,15 @@ export class AgentManager {
     });
   }
 
+  /** Server shutdown: stops every run. Streamed text is saved so the reply shows what arrived before "[interrupted]". */
   dispose(): void {
-    for (const slot of this.slots.values()) {
+    for (const [agentId, slot] of this.slots) {
       slot.runner.stop();
       slot.runId++;
       this.clearHold(slot);
+      if (slot.streamingMessageId !== null && this.world.findMessage(agentId, slot.streamingMessageId) !== undefined) {
+        this.world.updateMessage(agentId, slot.streamingMessageId, {});
+      }
     }
   }
 
@@ -167,6 +219,7 @@ export class AgentManager {
   private startNextIfIdle(agentId: string): void {
     const slot = this.slot(agentId);
     if (isBusy(slot.queue)) return;
+    if (this.world.getProject(this.world.getAgent(agentId).projectId).archived) return;
     slot.queue = startNext(slot.queue);
     const input = slot.queue.current;
     if (input === null) return;
@@ -200,15 +253,20 @@ export class AgentManager {
         text: input.text,
         sessionId: agent.claudeSessionId,
         cwd: this.world.getProjectRoot(agent.projectId),
+        chatOnly: agent.chatOnly,
       },
       {
+        addNote: (text) => {
+          if (!live()) throw new Error("This run has ended");
+          return this.writeNote(agentId, text);
+        },
         onStatus: (status, activity) => {
           if (live()) this.setStatus(agentId, status, activity);
         },
         onDelta: (chunk) => {
           if (!live()) return;
           const message = this.ensureStreamingMessage(agentId, input.taskId);
-          this.world.updateMessage(agentId, message.id, { text: message.text + chunk });
+          this.world.updateMessage(agentId, message.id, { text: message.text + chunk }, false);
           this.world.emit({
             type: "chat.message_delta",
             projectId: message.projectId,
@@ -289,6 +347,7 @@ export class AgentManager {
     this.setStatus(agentId, status, activity);
     slot.holdTimer = setTimeout(() => {
       slot.holdTimer = null;
+      this.completeInputMessage(agentId, slot.queue.current);
       slot.queue = finishCurrent(slot.queue);
       this.setIdle(agentId);
       this.startNextIfIdle(agentId);
@@ -299,6 +358,10 @@ export class AgentManager {
   private applyToolEvent(agentId: string, taskId: string | null, event: ToolEvent): void {
     const slot = this.slot(agentId);
     const agent = this.world.getAgent(agentId);
+    // Pinning a note happens at the planning board.
+    if (event.toolName === "add_note") {
+      this.world.updateAgent(agentId, { location: event.phase === "started" ? "planning" : ROLE_DEFINITIONS[agent.role].homeStation });
+    }
     if (event.phase === "started") {
       // Text after the tool call goes into a new reply bubble, below the tool line.
       this.endStreamingSegment(agentId, "", "complete");
@@ -401,12 +464,21 @@ export class AgentManager {
   }
 
   private setIdle(agentId: string): void {
-    this.world.updateAgent(agentId, { busy: isBusy(this.slot(agentId).queue), currentTaskId: null });
+    const home = ROLE_DEFINITIONS[this.world.getAgent(agentId).role].homeStation;
+    this.world.updateAgent(agentId, { busy: isBusy(this.slot(agentId).queue), currentTaskId: null, location: home });
     this.setStatus(agentId, "idle", "");
+  }
+
+  /** The input's chat message was handled (a "delivered" message after a restart means it was cut off). */
+  private completeInputMessage(agentId: string, input: AgentInput | null): void {
+    if (input === null) return;
+    const message = this.world.findMessage(agentId, input.id);
+    if (message?.status === "delivered") this.world.updateMessage(agentId, input.id, { status: "complete" });
   }
 
   private syncQueueFields(agentId: string): void {
     const queue = this.slot(agentId).queue;
+    this.world.setSavedQueue(agentId, queue.queued);
     this.world.updateAgent(agentId, { busy: isBusy(queue), queuedCount: queue.queued.length });
   }
 

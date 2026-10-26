@@ -23,27 +23,32 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 ## Folders
 
 - `src/app/` Next.js App Router pages and `globals.css` (Tailwind 4 `@theme` tokens, dark only).
-- `src/shared/config.ts` every setting and limit.
+- `src/shared/config.ts` every setting and limit. `blockedProjectRoots` uses `APP_ROOT` for this app's folder (resolved by the server from process.cwd()).
 - `src/shared/ids.ts` agent id helpers and `newId(prefix)`.
 - `src/shared/domain/` pure domain: roles, agent/project/chat/task types, `workflow.ts` (task state machine), `messageQueue.ts` (per-agent FIFO input queue), `permissions.ts` (`evaluatePermission`, the tool and git policy).
 - `src/shared/events/` the event vocabulary.
 - `src/shared/protocol/` WebSocket contract: `protocol.ts` (types) and `schemas.ts` (zod schemas, `parseClientMessage`, `parseServerMessage`, compile-time checks that schemas match the types).
 - `src/shared/backend/AgentBackend.ts` the interface the browser uses to reach the server.
 - `src/shared/events/eventPayloads.ts` zod schemas for event `metadata` the client relies on (chat messages, deltas, status, queue).
-- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` until phase 3). Imports `src/shared` with relative `.ts` paths.
+- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle, session reset, chat only), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` is the fake runner for tests and `AGENT_RUNNER=echo`). Imports `src/shared` with relative `.ts` paths.
 - `src/app/api/session-token/route.ts` gives the browser the token the server writes to `data/session-token` (loopback Host only).
 - `src/client/` `WebSocketAgentBackend.ts` (AgentBackend over WebSocket, acks, timeouts, reconnect) and `backendClient.ts` (singleton + store wiring).
 - `src/state/useWorldStore.ts` Zustand mirror: connection, throttled snapshot, chats per agent, recent events.
 - `src/components/dev/DevConsole.tsx` temporary dev page (replaced in phase 6).
-- `server/agents/claude/` the real agents: `ClaudeRunner.ts` (Claude Agent SDK `query()`, billing guard, env, recordings), `translate.ts` (pure SDK message → action mapping), `toolSummary.ts` (tool call descriptions). `server/agents/PermissionBroker.ts` turns "ask" verdicts into permission cards and waits for `respondPermission`. `server/sandbox.ts` prepares `config.sandboxRoot`.
-- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard and ClaudeRunner with a fake SDK (tsx). `npm test` never calls Claude. `npm run test:live` makes one real call.
+- `server/agents/claude/` the real agents: `ClaudeRunner.ts` (Claude Agent SDK `query()`, billing guard, env, recordings, role prompt, tool list), `translate.ts` (pure SDK message → action mapping), `toolSummary.ts` (tool call descriptions), `notesTool.ts` (the in-process `agentworld` tool server with `add_note`). `server/agents/PermissionBroker.ts` turns "ask" verdicts into permission cards and waits for `respondPermission`. `server/sandbox.ts` prepares `config.sandboxRoot`.
+- `server/projects/` `folders.ts` (folder browser and project folder rules, all on real paths), `notes.ts` (`.agentworld/notes.md`, the `.gitignore` entry), `ProjectService.ts` (create, archive, restore, notes, pins).
+- `server/store/` `DataStore.ts` JSON persistence under `dataDir`: `projects.json`, `agents/<projectId>.json` (session id, chat only, queued inputs), `chats/<agentId with : → _>.jsonl` (append only; the latest line per message id wins, `{ deletedId }` removes one). Whole files are written atomically (`files.ts`). Loaded once on start by `World.load()`.
+- `server/roles/` the role prompt files (`shared.md` + one per role) and `rolePrompts.ts`. Read at the start of every run and appended to Claude Code's own prompt.
+- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard, role prompts, add_note and ClaudeRunner with a fake SDK (tsx); `scripts/test-projects.ts` folder rules, projects, notes and persistence across a server restart. Tests use folders under `.tmp/`, never `data/` or `D:\agent-sandbox`. `npm test` never calls Claude. `npm run test:live` makes one real call (with a throwaway data folder).
 
 ## Claude agents
 
 - Agents run on the Claude subscription only. The billing guard refuses to start with ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX set, strips every inherited CLAUDE*/ANTHROPIC* variable, and aborts a run whose init reports API key billing.
 - The agents' Claude Code login, sessions and settings live in `config.claudeConfigDir` (`D:\3d-ai-agent\.claude-home`, git-ignored). Log in once with `npm run claude:login` (pick "Claude account with subscription").
 - Every tool call goes through `explainPermission` in a PreToolUse hook ("ask" forces `canUseTool` → PermissionBroker card). Never use the SDK's `allowedTools` (it auto-approves) or a bypass permission mode.
-- No MCP servers, claude.ai connectors or skills are loaded (`strictMcpConfig`, `disableClaudeAiConnectors`, `skills: []`): the connectors add ~300k tokens per run.
+- The only tool server is our in-process `agentworld` server (`add_note`, seen by Claude as `mcp__agentworld__add_note`; `canonicalToolName` maps it back). No other MCP servers, claude.ai connectors or skills are loaded (`strictMcpConfig`, `disableClaudeAiConnectors`, `skills: []`): the connectors add ~300k tokens per run.
+- System prompt: `{ type: "preset", preset: "claude_code", append: <role prompt>, snapshot: false }`. `snapshot: false` matters: a recorded prompt would ignore prompt edits and the chat only switch in resumed sessions.
+- Chat only agents run with `tools: []`, no tool server, and an empty allowed tool list in the permission rules.
 - Raw SDK messages are recorded to `data/recordings/<agent>/<YYYYMMDD-HHmmss>.jsonl`.
 
 ## Machine constraints (Windows)
