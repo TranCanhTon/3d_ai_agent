@@ -43,6 +43,12 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - Run `bd` with `BD_DISABLE_METRICS=1` and `BD_DISABLE_EVENT_FLUSH=1`, otherwise it writes to `C:\Users\ACER\.beads`. Both are set in `.claude/settings.json` and the `.beads/hooks`.
 - Scripts must work on Windows: no bash-only syntax, no `&` backgrounding, no `export VAR=`.
 
+## Commit messages
+
+- Use Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:`, `style:`, optionally with a scope (`feat(server): ...`).
+- Never mention a phase (no "Phase 2", "phase 3 work", etc.) anywhere in a commit message: subject or body.
+- Short imperative subject; the body explains what changed and why.
+
 ## Protocol in one paragraph
 
 First client message: `{ type: "hello", token }`. Then `{ type: "command", id, command: { name, args } }`. Server sends `{ type: "snapshot", snapshot }`, `{ type: "event", event }` and `{ type: "ack", id, ok, result | error }`. Chat history is not in the snapshot: use `getChatHistory`. When you add or change a command, update `CommandArgsMap`/`CommandResultMap` in `protocol.ts`, the schema in `schemas.ts` and the examples in `scripts/test.ts`; typecheck fails if the schema and type drift.
