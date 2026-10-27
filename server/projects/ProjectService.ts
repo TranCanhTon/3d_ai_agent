@@ -19,6 +19,10 @@ export interface ProjectServiceDeps {
   browserRoot: string;
   /** Real paths no project may be in, equal to, or contain (this app's folder). */
   blockedRoots: string[];
+  /** Called after a project is marked archived, before its agents are stopped (the pipeline pauses its task). */
+  onArchive?(projectId: string): void;
+  /** Called after a project is restored and its agents picked up their chat messages. */
+  onRestore?(projectId: string): void;
 }
 
 export class ProjectService {
@@ -79,6 +83,7 @@ export class ProjectService {
     const project = this.deps.world.getProject(projectId);
     if (project.archived) throw new Error("Project is already archived");
     this.deps.world.updateProject(projectId, { archived: true });
+    this.deps.onArchive?.(projectId);
     this.deps.agents.stopProject(projectId);
     this.deps.world.emit({ type: "project.archived", projectId, message: `Project "${project.name}" archived` });
   }
@@ -89,6 +94,7 @@ export class ProjectService {
     this.deps.world.updateProject(projectId, { archived: false });
     this.deps.world.emit({ type: "project.restored", projectId, message: `Project "${project.name}" restored` });
     this.deps.agents.resumeProject(projectId);
+    this.deps.onRestore?.(projectId);
   }
 
   getNotes(projectId: string): string {
@@ -99,6 +105,11 @@ export class ProjectService {
   addAgentNote(agentId: string, text: string): string {
     const agent = this.deps.world.getAgent(agentId);
     return this.appendNote(agent.projectId, formatNote(cleanNoteText(text), agent.name, this.deps.world.now()));
+  }
+
+  /** The pipeline's task log line: `- <text> (task log, YYYY-MM-DD)`, text cut to noteMaxChars. */
+  addTaskLog(projectId: string, text: string): string {
+    return this.appendNote(projectId, formatNote(cleanNoteText(text), "task log", this.deps.world.now()));
   }
 
   /** Pins my (possibly edited) text of a chat message to the notes and marks the message pinned. */

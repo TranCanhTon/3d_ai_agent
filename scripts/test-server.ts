@@ -349,10 +349,29 @@ await check("9. invalid JSON and an unknown command do not take the server down"
   client.close();
 });
 
-await check("10. an unimplemented command (submitTask) mentions phase 5", async () => {
+await check("10. task commands: submit, then clear errors for resume, answer and a second cancel", async () => {
   const client = await TestClient.authed();
-  const submit = await client.command("submitTask", { projectId, title: "x" });
-  assert.ok(!submit.ok && /phase 5/.test(submit.error));
+  const blank = await client.command("submitTask", { projectId, title: "   " });
+  assert.ok(!blank.ok, "empty title");
+  const long = await client.command("submitTask", { projectId, title: "x".repeat(CONFIG.maxTaskTitleChars + 1) });
+  assert.ok(!long.ok, "title over maxTaskTitleChars");
+  const unknown = await client.command("submitTask", { projectId: "proj_nope", title: "x" });
+  assert.ok(!unknown.ok && /Unknown project/.test(unknown.error));
+
+  const submit = await client.command("submitTask", { projectId, title: "Add dark mode", priority: "high" });
+  assert.ok(submit.ok);
+  const taskId = (submit.result as { id: string }).id;
+  const resume = await client.command("resumeTask", { taskId });
+  assert.ok(!resume.ok && /not paused/.test(resume.error), resume.ok ? "" : resume.error);
+  const answer = await client.command("answerTask", { taskId, text: "x" });
+  assert.ok(!answer.ok && /no question/.test(answer.error));
+  const cancel = await client.command("cancelTask", { taskId });
+  assert.ok(cancel.ok);
+  const again = await client.command("cancelTask", { taskId });
+  assert.ok(!again.ok && /already ended/.test(again.error));
+  const ended = await client.waitFor((m) => (m.type === "event" && m.event.type === "task.cancelled" ? m.event : undefined));
+  assert.equal(ended.taskId, taskId);
+
   const permission = await client.command("respondPermission", { requestId: "p", decision: "allow" });
   assert.ok(!permission.ok && /already answered/.test(permission.error), "respondPermission is implemented");
   client.close();

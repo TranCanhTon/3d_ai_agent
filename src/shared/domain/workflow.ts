@@ -1,13 +1,16 @@
 // Pure workflow state machine (reference section 3.3). No timers, no I/O.
 //
 // queued ──picked_up──▶ intake ──delegated──▶ planning ──plan_ready──▶ research
+// planning ──research_skipped──▶ implementation   (no research questions)
 // research ──findings_published──▶ implementation ──submitted──▶ testing
 // testing ──tests_passed──▶ review ──approved──▶ done
 // testing ──tests_failed──▶ implementation        (rework)
 // review  ──changes_requested──▶ implementation   (rework)
-// any non-terminal ──abort──▶ failed
+// any non-terminal ──abort──▶ failed              (errors, too many attempts, cancel)
 //
 // Rework when `iteration >= maxIterations` applies `abort` instead and ends in failed.
+// The pipeline's summary step (sONion Ring) runs while the phase is still "review":
+// it applies `approved` only when the summary arrives.
 
 import type { AppConfig } from "../config.ts";
 import type { CreateTaskInput, Task, TaskStatus, WorkflowPhase, WorkflowSignal } from "./taskTypes.ts";
@@ -29,7 +32,7 @@ export const PHASE_STATUS: Record<WorkflowPhase, TaskStatus> = {
 const TRANSITIONS: Partial<Record<WorkflowPhase, Partial<Record<WorkflowSignal, WorkflowPhase>>>> = {
   queued: { picked_up: "intake" },
   intake: { delegated: "planning" },
-  planning: { plan_ready: "research" },
+  planning: { plan_ready: "research", research_skipped: "implementation" },
   research: { findings_published: "implementation" },
   implementation: { submitted: "testing" },
   testing: { tests_passed: "review", tests_failed: "implementation" },
@@ -136,5 +139,10 @@ export function createTask(id: string, input: CreateTaskInput, at: number): Task
     findings: [],
     history: [],
     blockedReason: null,
+    sessions: {},
+    outputs: {},
+    question: null,
+    endReason: null,
+    summary: null,
   };
 }

@@ -18,6 +18,24 @@ import { evaluatePermission, explainPermission, type PermissionConfig, type Perm
 import { ADD_NOTE_SDK_NAME, AGENT_ROLES, builtInToolsFor, canonicalToolName, ROLE_DEFINITIONS, type AgentRole } from "../src/shared/domain/roles.ts";
 import type { Task, WorkflowSignal } from "../src/shared/domain/taskTypes.ts";
 import { applySignal, blockTask, canTransition, createTask, isTerminal, unblockTask } from "../src/shared/domain/workflow.ts";
+import {
+  bulletItems,
+  continueText,
+  implementationHandoff,
+  intakeHandoff,
+  isNone,
+  parseReply,
+  planningHandoff,
+  planSteps,
+  readStepResult,
+  reminderText,
+  researchHandoff,
+  reviewHandoff,
+  reworkHandoff,
+  summaryHandoff,
+  testingHandoff,
+  type TeamNames,
+} from "../src/shared/domain/handoff.ts";
 import type { ClientCommand, ServerMessage, WorldSnapshot } from "../src/shared/protocol/protocol.ts";
 import { parseClientMessage, parseCommandResult, parseServerMessage } from "../src/shared/protocol/schemas.ts";
 
@@ -201,6 +219,147 @@ check("blocked overrides status and clears on unblock or terminal", () => {
   const aborted = signal(blocked, "abort");
   assert.equal(aborted.status, "failed");
   assert.equal(aborted.blockedReason, null);
+});
+
+check("planning + research_skipped goes straight to implementation (attempt 1)", () => {
+  const planning = run(newTask(), ["picked_up", "delegated"]);
+  const skipped = signal(planning, "research_skipped");
+  assert.equal(skipped.phase, "implementation");
+  assert.equal(skipped.iteration, 1);
+  assert.equal(canTransition("research", "research_skipped"), false);
+  assert.deepEqual(run(skipped, ["submitted", "tests_passed", "approved"]).phase, "done");
+});
+
+check("a new task has no sessions, outputs, question, end reason or summary", () => {
+  const task = newTask();
+  assert.deepEqual([task.sessions, task.outputs, task.question, task.endReason, task.summary], [{}, {}, null, null, null]);
+});
+
+// ── 3b. Handoff markers ─────────────────────────────────────────────────────
+describe("3b. Handoff markers and texts");
+
+check("markdown bold, headings and trailing spaces around markers", () => {
+  const parsed = parseReply("Looks good.\n\n**VERDICT: PASS**   \n");
+  assert.equal(parsed.values.VERDICT, "PASS");
+  assert.equal(parseReply("VERDICT: APPROVED.").values.VERDICT, "APPROVED");
+  const plan = parseReply("## PLAN:\n1. **Add** the toggle\n2. Save it  \n\n### RESEARCH QUESTIONS:\n- none\n");
+  assert.equal(plan.sections.PLAN, "1. **Add** the toggle\n2. Save it");
+  assert.equal(plan.sections["RESEARCH QUESTIONS"], "- none");
+  assert.equal(parseReply("> `BRIEF:` Make it dark").sections.BRIEF, "Make it dark");
+  assert.equal(parseReply("__SUMMARY:__ Added dark mode").sections.SUMMARY, "Added dark mode");
+});
+
+check("a marker word inside a sentence is not a marker; marker words are case sensitive", () => {
+  const parsed = parseReply("I will write the PLAN: below.\nverdict: pass\n");
+  assert.equal(parsed.sections.PLAN, undefined);
+  assert.equal(parsed.values.VERDICT, undefined);
+  assert.equal(readStepResult("testing", "All tests ran.\nverdict: PASS").kind, "missing");
+});
+
+check("sections run to the next marker; the last occurrence wins", () => {
+  const reply = "CHANGES:\n- a.ts: old\nHOW TO TEST:\n- run it\n\nSorry, again:\nCHANGES:\n- b.ts: new\nHOW TO TEST:\n- npm test";
+  const result = readStepResult("implementation", reply);
+  assert.deepEqual(result, { kind: "changes", changes: "- b.ts: new", howToTest: "- npm test" });
+});
+
+check("two VERDICT lines: the last one wins; only the role's values count", () => {
+  assert.deepEqual(readStepResult("testing", "VERDICT: FAIL\nRe-ran it, now fine.\nVERDICT: PASS"), { kind: "qa", verdict: "PASS" });
+  assert.deepEqual(readStepResult("review", "VERDICT: CHANGES\n- a.ts: rename\n**VERDICT: APPROVED**"), { kind: "review", verdict: "APPROVED" });
+  assert.deepEqual(readStepResult("testing", "VERDICT: APPROVED"), { kind: "missing", marker: "VERDICT:" });
+  assert.deepEqual(readStepResult("review", "VERDICT: PASS"), { kind: "missing", marker: "VERDICT:" });
+  assert.deepEqual(readStepResult("testing", "VERDICT: PASS, mostly"), { kind: "missing", marker: "VERDICT:" });
+});
+
+check("research questions none / None. / - none / empty skip research; real questions do not", () => {
+  for (const none of ["none", "None.", "- none", "(none)", "", "  - **None**  "]) {
+    assert.equal(isNone(none), true, JSON.stringify(none));
+    const result = readStepResult("planning", `PLAN:\n1. Do it\nRESEARCH QUESTIONS:\n${none}`);
+    assert.ok(result.kind === "plan" && result.skipResearch, JSON.stringify(none));
+  }
+  const asks = readStepResult("planning", "PLAN:\n1. Do it\nRESEARCH QUESTIONS:\n- Which icon set?\n- none of the above?");
+  assert.ok(asks.kind === "plan" && !asks.skipResearch);
+  assert.equal(isNone("No questions"), false);
+});
+
+check("plan steps become subtasks; findings bullets become findings", () => {
+  const result = readStepResult("planning", "PLAN:\n1. Add the **toggle** in `Header.tsx`\n2) Save the choice\n   - detail line\n3. Test\nRESEARCH QUESTIONS:\nnone");
+  assert.ok(result.kind === "plan");
+  assert.deepEqual(result.subtasks, ["Add the toggle in Header.tsx", "Save the choice", "Test"]);
+  assert.deepEqual(planSteps("no steps here"), []);
+  const findings = readStepResult("research", "Checked the docs.\nFINDINGS:\n- Use `prefers-color-scheme`\n* Tailwind has a dark: variant\nPlain text line");
+  assert.ok(findings.kind === "findings");
+  assert.deepEqual(findings.items, ["Use prefers-color-scheme", "Tailwind has a dark: variant"]);
+  assert.deepEqual(bulletItems(""), []);
+});
+
+check("missing markers name what is missing", () => {
+  assert.deepEqual(readStepResult("intake", "Sure, I can help."), { kind: "missing", marker: "BRIEF:" });
+  assert.deepEqual(readStepResult("planning", "PLAN:\n1. x"), { kind: "missing", marker: "RESEARCH QUESTIONS:" });
+  assert.deepEqual(readStepResult("planning", "RESEARCH QUESTIONS:\nnone"), { kind: "missing", marker: "PLAN:" });
+  assert.deepEqual(readStepResult("research", "FINDINGS:\n"), { kind: "missing", marker: "FINDINGS:" });
+  assert.deepEqual(readStepResult("implementation", "CHANGES:\n- a.ts: x"), { kind: "missing", marker: "HOW TO TEST:" });
+  assert.deepEqual(readStepResult("summary", "All done!"), { kind: "missing", marker: "SUMMARY:" });
+});
+
+check("intake: QUESTION or BRIEF, whichever comes last; no second question after my answer", () => {
+  assert.deepEqual(readStepResult("intake", "QUESTION:\nWhich pages?"), { kind: "question", question: "Which pages?" });
+  assert.deepEqual(readStepResult("intake", "BRIEF:\nDark mode everywhere"), { kind: "brief", brief: "Dark mode everywhere" });
+  assert.equal(readStepResult("intake", "BRIEF:\nx\nQUESTION:\nWhich pages?").kind, "question");
+  assert.equal(readStepResult("intake", "QUESTION:\nWhich pages?", false).kind, "missing");
+  assert.deepEqual(readStepResult("summary", "Done.\nSUMMARY:\n- Added dark mode to all pages\n"), { kind: "summary", summary: "Added dark mode to all pages" });
+});
+
+const team: TeamNames = {
+  orchestrator: "sONion Ring",
+  product_manager: "Pronelio Maximus",
+  researcher: "Drater",
+  engineer: "STD Dren",
+  qa: "Quantarino Archilles",
+  reviewer: "Rabies",
+};
+const darkMode = { title: "Add dark mode", description: "All pages", priority: "high" as const };
+
+check("every handoff starts with who it is from and the task", () => {
+  const firstLines = [
+    intakeHandoff(darkMode),
+    planningHandoff(team, darkMode, "brief"),
+    researchHandoff(team, darkMode, "brief", "plan", "- which?"),
+    implementationHandoff(team, darkMode, "brief", "plan", null),
+    implementationHandoff(team, darkMode, "brief", "plan", "- use X"),
+    reworkHandoff(team, darkMode, 2, "qa", "VERDICT: FAIL"),
+    reworkHandoff(team, darkMode, 3, "review", "VERDICT: CHANGES"),
+    testingHandoff(team, darkMode, 2, "plan", "changes", "steps"),
+    reviewHandoff(team, darkMode, 1, "brief", "plan", "changes"),
+    summaryHandoff(team, darkMode, 1, "changes", "PASS", "APPROVED"),
+  ].map((text) => text.split("\n")[0]);
+  assert.deepEqual(firstLines, [
+    'From you, task "Add dark mode":',
+    'From sONion Ring, task "Add dark mode":',
+    'From Pronelio Maximus, task "Add dark mode":',
+    'From Pronelio Maximus, task "Add dark mode" (attempt 1):',
+    'From Drater, task "Add dark mode" (attempt 1):',
+    'From Quantarino Archilles, task "Add dark mode" (attempt 2):',
+    'From Rabies, task "Add dark mode" (attempt 3):',
+    'From STD Dren, task "Add dark mode" (attempt 2):',
+    'From Quantarino Archilles, task "Add dark mode" (attempt 1):',
+    'From Rabies, task "Add dark mode":',
+  ]);
+});
+
+check("handoffs carry what the next agent needs and the required ending", () => {
+  const intake = intakeHandoff(darkMode);
+  assert.ok(intake.includes("Priority: high") && intake.includes("Description:\nAll pages") && intake.includes("QUESTION:"));
+  assert.ok(planningHandoff(team, darkMode, "Make it dark").includes("BRIEF:\nMake it dark"));
+  const research = researchHandoff(team, darkMode, "b", "1. x", "- Which icon set?");
+  assert.ok(research.includes("PLAN:\n1. x") && research.includes("RESEARCH QUESTIONS:\n- Which icon set?") && research.endsWith("End with FINDINGS:."));
+  assert.ok(implementationHandoff(team, darkMode, "b", "p", null).includes("FINDINGS:\nnone (no research needed)"));
+  const rework = reworkHandoff(team, darkMode, 2, "qa", "npm test failed\nVERDICT: FAIL");
+  assert.ok(rework.includes("QA failed. Report:\nnpm test failed") && rework.includes("Do not commit or push"));
+  assert.ok(testingHandoff(team, darkMode, 2, "p", "- a.ts", "- run").includes("HOW TO TEST:\n- run"));
+  assert.ok(reviewHandoff(team, darkMode, 1, "b", "p", "- a.ts").includes("QA passed."));
+  assert.ok(summaryHandoff(team, darkMode, 2, "- a.ts", "PASS", "APPROVED").includes("after 2 attempts. QA: PASS. Review: APPROVED."));
+  assert.equal(continueText("testing"), "Continue where you left off. Finish with the required ending: VERDICT: PASS or VERDICT: FAIL.");
+  assert.ok(reminderText("planning").endsWith("PLAN: and RESEARCH QUESTIONS:"));
 });
 
 // ── 4. Queue ────────────────────────────────────────────────────────────────
@@ -543,16 +702,18 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "submitTask", args: { projectId: "proj_1", title: "Add dark mode", description: "All pages", priority: "high" } },
   { name: "cancelTask", args: { taskId: "task_1" } },
   { name: "resumeTask", args: { taskId: "task_1" } },
+  { name: "answerTask", args: { taskId: "task_1", text: "Only the settings page" } },
   { name: "respondPermission", args: { requestId: "perm_1", decision: "allow" } },
   { name: "pinToNotes", args: { messageId: "msg_1", text: "We always use Tailwind" } },
   { name: "getNotes", args: { projectId: "proj_1" } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", before: "msg_9", limit: 50 } },
+  { name: "getChatHistory", args: { agentId: "proj_1:qa", view: "tasks" } },
   { name: "getSnapshot", args: {} },
 ];
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 17);
+  assert.equal(names.size, 18);
 });
 
 for (const command of EXAMPLE_COMMANDS) {

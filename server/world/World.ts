@@ -12,7 +12,7 @@ import type { Task } from "../../src/shared/domain/taskTypes.ts";
 import type { AgentEvent } from "../../src/shared/events/eventTypes.ts";
 import { makeAgentId, newId } from "../../src/shared/ids.ts";
 import type { AuthState, CommLink, UsageState, WorldSnapshot } from "../../src/shared/protocol/protocol.ts";
-import type { DataStore, SavedAgent } from "../store/DataStore.ts";
+import type { DataStore, SavedAgent, SavedTask } from "../store/DataStore.ts";
 
 export type EventInput = Omit<AgentEvent, "id" | "timestamp" | "severity" | "feed"> &
   Partial<Pick<AgentEvent, "severity" | "feed">>;
@@ -86,12 +86,16 @@ export class World {
    * Loads saved projects, agents and chats. Agents start idle. Messages a crash
    * left streaming or delivered (and queued ones no longer in a queue) become
    * errors marked [interrupted]; no events, they are history.
-   * Returns each agent's saved queue, to be restored by the AgentManager.
+   * Task inputs are dropped from the queues: their tasks are paused "Server restarted"
+   * by the pipeline and continue only when I resume them.
+   * Returns each agent's saved queue, to be restored by the AgentManager, and the
+   * saved tasks, for the pipeline.
    */
-  load(): Map<string, AgentInput[]> {
-    if (this.store === null) return new Map();
+  load(): { queues: Map<string, AgentInput[]>; tasks: Map<string, SavedTask[]> } {
+    if (this.store === null) return { queues: new Map(), tasks: new Map() };
     const data = this.store.load();
     const queues = new Map<string, AgentInput[]>();
+    const dropped = new Set<string>();
 
     for (const project of data.projects) {
       this.projects.set(project.id, project);
@@ -100,8 +104,9 @@ export class World {
         const agent = this.newAgent(project.id, role, saved.get(role));
         this.agents.set(agent.id, agent);
         this.chat.set(agent.id, []);
-        const queue = saved.get(role)?.queue ?? [];
+        const queue = (saved.get(role)?.queue ?? []).filter((input) => input.taskId === null);
         this.queues.set(agent.id, queue);
+        if (queue.length !== (saved.get(role)?.queue ?? []).length) dropped.add(project.id);
         if (queue.length > 0) queues.set(agent.id, queue);
       }
     }
@@ -121,7 +126,8 @@ export class World {
         this.messageAgents.set(message.id, agentId);
       }
     }
-    return queues;
+    for (const projectId of dropped) this.saveAgents(projectId);
+    return { queues, tasks: data.tasks };
   }
 
   // ── Projects ──
@@ -267,6 +273,29 @@ export class World {
     list.splice(index, 1);
     this.messageAgents.delete(messageId);
     this.store?.deleteMessage(agentId, messageId);
+  }
+
+  // ── Tasks and links ──
+
+  /** The pipeline owns tasks; this mirrors one into the snapshot. */
+  setTask(task: Task): void {
+    this.tasks.set(task.id, task);
+    this.changed();
+  }
+
+  getTask(taskId: string): Task {
+    const task = this.tasks.get(taskId);
+    if (task === undefined) throw new Error(`Unknown task: ${taskId}`);
+    return task;
+  }
+
+  /** An arc between two agents, shown for commLinkDurationMs (expired links drop out of the snapshot). */
+  addLink(from: string, to: string, kind: CommLink["kind"]): void {
+    const now = this.now();
+    this.links = [...this.links.filter((link) => link.endsAt > now), { id: newId("link"), from, to, kind, startedAt: now, endsAt: now + CONFIG.commLinkDurationMs }];
+    this.changed();
+    // One more snapshot once it has expired, so clients stop drawing it.
+    setTimeout(() => this.changed(), CONFIG.commLinkDurationMs + 1).unref();
   }
 
   // ── Saving ──

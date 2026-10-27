@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { AGENT_STATUSES } from "../domain/agentTypes.ts";
-import { chatMessageSchema, permissionRequestSchema } from "../protocol/schemas.ts";
+import { chatMessageSchema, permissionRequestSchema, taskSchema } from "../protocol/schemas.ts";
 import type { AgentEvent, AgentEventType } from "./eventTypes.ts";
 
 export const eventPayloadSchemas = {
@@ -29,6 +29,8 @@ export const eventPayloadSchemas = {
   usageLimit: z.object({ resetsAt: z.number().nullable() }),
   /** notes.updated: the line appended to the project's notes file. */
   notesUpdated: z.object({ line: z.string() }),
+  /** task.*, plan.created, research.completed, implementation.*, qa.*, review.*: the task after the change. */
+  task: z.object({ task: taskSchema }),
 };
 
 export type ChatMessagePayload = z.infer<typeof eventPayloadSchemas.chatMessage>;
@@ -40,6 +42,7 @@ export type PermissionRequestedPayload = z.infer<typeof eventPayloadSchemas.perm
 export type PermissionResolvedPayload = z.infer<typeof eventPayloadSchemas.permissionResolved>;
 export type UsageLimitPayload = z.infer<typeof eventPayloadSchemas.usageLimit>;
 export type NotesUpdatedPayload = z.infer<typeof eventPayloadSchemas.notesUpdated>;
+export type TaskPayload = z.infer<typeof eventPayloadSchemas.task>;
 
 /** Returns the event's metadata if the event has the given type and the metadata matches. */
 export function readPayload<T>(event: AgentEvent, type: AgentEventType | AgentEventType[], schema: z.ZodType<T>): T | null {

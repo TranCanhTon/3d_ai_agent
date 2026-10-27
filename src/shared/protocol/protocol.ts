@@ -66,17 +66,26 @@ export interface CommandArgsMap {
   setChatOnly: { agentId: string; chatOnly: boolean };
   submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority };
   cancelTask: { taskId: string };
+  /** Only for a paused task without a question. */
   resumeTask: { taskId: string };
+  /** My answer to sONion Ring's question; the task continues. */
+  answerTask: { taskId: string; text: string };
   respondPermission: { requestId: string; decision: PermissionDecision };
   /** `text` is what I edited from the message (at most noteMaxChars). */
   pinToNotes: { messageId: string; text: string };
   getNotes: { projectId: string };
-  /** `before` is a message id; returns messages older than it, newest last. */
-  getChatHistory: { agentId: string; before?: string; limit?: number };
+  /**
+   * `before` is a message id; returns messages older than it, newest last.
+   * view "chat" (default): my direct chat (taskId null); "tasks": the agent's task messages.
+   */
+  getChatHistory: { agentId: string; before?: string; limit?: number; view?: ChatView };
   getSnapshot: Record<string, never>;
 }
 
 export type CommandName = keyof CommandArgsMap;
+
+export const CHAT_VIEWS = ["chat", "tasks"] as const;
+export type ChatView = (typeof CHAT_VIEWS)[number];
 
 export interface FolderEntry {
   name: string;
@@ -114,6 +123,7 @@ export interface CommandResultMap {
   submitTask: Task;
   cancelTask: null;
   resumeTask: null;
+  answerTask: null;
   respondPermission: null;
   pinToNotes: null;
   /** The notes file's content. */

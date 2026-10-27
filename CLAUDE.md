@@ -25,21 +25,21 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - `src/app/` Next.js App Router pages and `globals.css` (Tailwind 4 `@theme` tokens, dark only).
 - `src/shared/config.ts` every setting and limit. `blockedProjectRoots` uses `APP_ROOT` for this app's folder (resolved by the server from process.cwd()).
 - `src/shared/ids.ts` agent id helpers and `newId(prefix)`.
-- `src/shared/domain/` pure domain: roles, agent/project/chat/task types, `workflow.ts` (task state machine), `messageQueue.ts` (per-agent FIFO input queue), `permissions.ts` (`evaluatePermission`, the tool and git policy).
+- `src/shared/domain/` pure domain: roles, agent/project/chat/task types, `workflow.ts` (task state machine), `messageQueue.ts` (per-agent FIFO input queue), `permissions.ts` (`evaluatePermission`, the tool, git and shell policy), `handoff.ts` (pipeline steps, the reply marker parser `readStepResult`, the handoff text templates).
 - `src/shared/events/` the event vocabulary.
 - `src/shared/protocol/` WebSocket contract: `protocol.ts` (types) and `schemas.ts` (zod schemas, `parseClientMessage`, `parseServerMessage`, compile-time checks that schemas match the types).
 - `src/shared/backend/AgentBackend.ts` the interface the browser uses to reach the server.
-- `src/shared/events/eventPayloads.ts` zod schemas for event `metadata` the client relies on (chat messages, deltas, status, queue).
-- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle, session reset, chat only), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` is the fake runner for tests and `AGENT_RUNNER=echo`). Imports `src/shared` with relative `.ts` paths.
+- `src/shared/events/eventPayloads.ts` zod schemas for event `metadata` the client relies on (chat messages, deltas, status, queue, `{ task }` on task events).
+- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle, session reset, chat only, task inputs and the `TaskHooks` the pipeline implements), `pipeline/Pipeline.ts` (tasks, the waiting line, steps, pauses, resume, cancel, task log), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` is the fake runner for tests and `AGENT_RUNNER=echo`). Imports `src/shared` with relative `.ts` paths.
 - `src/app/api/session-token/route.ts` gives the browser the token the server writes to `data/session-token` (loopback Host only).
 - `src/client/` `WebSocketAgentBackend.ts` (AgentBackend over WebSocket, acks, timeouts, reconnect) and `backendClient.ts` (singleton + store wiring).
 - `src/state/useWorldStore.ts` Zustand mirror: connection, throttled snapshot, chats per agent, recent events.
 - `src/components/dev/DevConsole.tsx` temporary dev page (replaced in phase 6).
 - `server/agents/claude/` the real agents: `ClaudeRunner.ts` (Claude Agent SDK `query()`, billing guard, env, recordings, role prompt, tool list), `translate.ts` (pure SDK message → action mapping), `toolSummary.ts` (tool call descriptions), `notesTool.ts` (the in-process `agentworld` tool server with `add_note`). `server/agents/PermissionBroker.ts` turns "ask" verdicts into permission cards and waits for `respondPermission`. `server/sandbox.ts` prepares `config.sandboxRoot`.
 - `server/projects/` `folders.ts` (folder browser and project folder rules, all on real paths), `notes.ts` (`.agentworld/notes.md`, the `.gitignore` entry), `ProjectService.ts` (create, archive, restore, notes, pins).
-- `server/store/` `DataStore.ts` JSON persistence under `dataDir`: `projects.json`, `agents/<projectId>.json` (session id, chat only, queued inputs), `chats/<agentId with : → _>.jsonl` (append only; the latest line per message id wins, `{ deletedId }` removes one). Whole files are written atomically (`files.ts`). Loaded once on start by `World.load()`.
+- `server/store/` `DataStore.ts` JSON persistence under `dataDir`: `projects.json`, `agents/<projectId>.json` (session id, chat only, queued inputs), `chats/<agentId with : → _>.jsonl` (append only; the latest line per message id wins, `{ deletedId }` removes one), `tasks/<projectId>.json` (each task plus the pipeline's step state). Whole files are written atomically (`files.ts`). Loaded once on start by `World.load()`.
 - `server/roles/` the role prompt files (`shared.md` + one per role) and `rolePrompts.ts`. Read at the start of every run and appended to Claude Code's own prompt.
-- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard, role prompts, add_note and ClaudeRunner with a fake SDK (tsx); `scripts/test-projects.ts` folder rules, projects, notes and persistence across a server restart. Tests use folders under `.tmp/`, never `data/` or `D:\agent-sandbox`. `npm test` never calls Claude. `npm run test:live` makes one real call (with a throwaway data folder).
+- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard, role prompts, add_note and ClaudeRunner with a fake SDK (tsx); `scripts/test-projects.ts` folder rules, projects, notes and persistence across a server restart; `scripts/test-pipeline.ts` the pipeline with a scripted fake runner per role (happy path, skips, rework, pauses, cancel, line order, restart). Tests use folders under `.tmp/`, never `data/` or `D:\agent-sandbox`. `npm test` never calls Claude. `npm run test:live` makes one real call (with a throwaway data folder).
 
 ## Claude agents
 
@@ -52,6 +52,18 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - System prompt: `{ type: "preset", preset: "claude_code", append: <role prompt>, snapshot: false }`. `snapshot: false` matters: a recorded prompt would ignore prompt edits and the chat only switch in resumed sessions.
 - Chat only agents run with `tools: []`, no tool server, and an empty allowed tool list in the permission rules.
 - Raw SDK messages are recorded to `data/recordings/<agent>/<YYYYMMDD-HHmmss>.jsonl`.
+
+## Task pipeline
+
+- A task starts only from the New task form (`submitTask`); chatting with sONion Ring stays chat. Server code (`Pipeline.ts` with `workflow.ts` and `handoff.ts`) decides every handoff; no agent picks who goes next. The pipeline never commits or pushes.
+- Steps: intake (sONion Ring, ends `BRIEF:` or `QUESTION:`) → planning (Pronelio Maximus, `PLAN:` + `RESEARCH QUESTIONS:`) → research (Drater, `FINDINGS:`; skipped when the questions are none/empty) → implementation (STD Dren, `CHANGES:` + `HOW TO TEST:`) → testing (Quantarino, last `VERDICT:` PASS/FAIL) → review (Rabies, last `VERDICT:` APPROVED/CHANGES) → summary (sONion Ring, `SUMMARY:`, while the phase is still review; `approved` is applied when it arrives). QA FAIL or review CHANGES go back to STD Dren, then QA and review again; rework past `maxIterations` fails the task.
+- Markers: a line starting with the marker word and a colon (markdown `**`, `#`, `>`, `_`, backticks ignored; case sensitive); a section runs to the next marker; the last occurrence wins. `PLAN:` steps become `task.subtasks`, `FINDINGS:` bullets `task.findings`.
+- One active task per project (paused ones keep the slot); the rest wait by `PRIORITY_ORDER`, then age. Projects run in parallel. Task inputs share each agent's FIFO queue with my chat messages, and always run with the role's tools (chat only is for direct chat).
+- Sessions: each task has its own Claude session per role (`task.sessions`); every step for the same agent in a task resumes it. Direct chat keeps `agent.claudeSessionId`; Reset session only resets that.
+- Pauses (`blockedReason`, status "blocked"), each continued only by Resume (`resumeTask`): usage limit (`Usage limit, resets HH:MM`; no new step starts anywhere while `world.usage.limited`), "Stopped by you", the run's error line (turn cap included), "Server restarted" (a step that was queued or running), "Project archived" (restore does not resume), "<name> did not finish with <MARKER>" (after one reminder in the same session), and sONion Ring's question ("Waiting for your answer": answer with `answerTask`, Resume refuses). Resume sends `Continue where you left off. Finish with the required ending: ...` when the step already ran in its task session, else the step's full handoff again. "Waiting for your OK" is shown while a step's permission card is open and clears when answered.
+- Cancel (`cancelTask`) stops the running step, removes the task's queued inputs and starts the next waiting task.
+- Task log: when a task ends one line goes into the notes: `- Task "<title>" done: <SUMMARY line> (task log, YYYY-MM-DD)`, `failed: <reason>` or `cancelled`. If the summary never comes, the task still ends done with the review's first line.
+- Handoffs are chat messages with `author { kind: "handoff", fromAgentId }` (the first one to sONion Ring and my answers are `{ kind: "user" }`, reminders `{ kind: "system" }`) and the task id; they emit `task.assigned` (agentId from, targetAgentId to), `agent.message` and a `CommLink` ("assign" forward, "report" for QA/review results back to STD Dren and the summary request).
 
 ## Machine constraints (Windows)
 
@@ -67,13 +79,13 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 
 ## Protocol in one paragraph
 
-First client message: `{ type: "hello", token }`. Then `{ type: "command", id, command: { name, args } }`. Server sends `{ type: "snapshot", snapshot }`, `{ type: "event", event }` and `{ type: "ack", id, ok, result | error }`. Chat history is not in the snapshot: use `getChatHistory`. When you add or change a command, update `CommandArgsMap`/`CommandResultMap` in `protocol.ts`, the schema in `schemas.ts` and the examples in `scripts/test.ts`; typecheck fails if the schema and type drift.
+First client message: `{ type: "hello", token }`. Then `{ type: "command", id, command: { name, args } }`. Server sends `{ type: "snapshot", snapshot }`, `{ type: "event", event }` and `{ type: "ack", id, ok, result | error }`. Chat history is not in the snapshot: use `getChatHistory` (`view: "chat"`, the default, for direct chat; `"tasks"` for an agent's task messages). Task commands: `submitTask` (returns the Task), `cancelTask`, `resumeTask`, `answerTask { taskId, text }`; they ack `ok:false` with the reason when the task is not in a state for it. When you add or change a command, update `CommandArgsMap`/`CommandResultMap` in `protocol.ts`, the schema in `schemas.ts` and the examples in `scripts/test.ts`; typecheck fails if the schema and type drift.
 
 ## Checks
 
     npm run typecheck   # tsc --noEmit, includes the schema/type sync checks
     npm run lint        # eslint src scripts server
-    npm test            # domain, server and agent tests (no Claude calls)
+    npm test            # domain, server, agent, project and pipeline tests (no Claude calls)
     npm run test:live   # one real Claude call (needs npm run claude:login once)
     npm run dev         # web (http://localhost:3000) + server (ws://127.0.0.1:4317)
     npm run dev:web     # or run them in two terminals

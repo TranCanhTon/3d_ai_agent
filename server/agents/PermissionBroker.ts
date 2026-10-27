@@ -26,6 +26,8 @@ export interface PermissionBrokerDeps {
   /** Lets the AgentManager own status changes (and their events). */
   setStatus(agentId: string, status: AgentStatus, activity: string): void;
   config?: PermissionConfig;
+  /** A card for this agent was opened or answered (the pipeline shows "Waiting for your OK"). */
+  onPendingChange?(agentId: string): void;
 }
 
 export class PermissionBroker {
@@ -77,6 +79,7 @@ export class PermissionBroker {
         metadata: { request } satisfies PermissionRequestedPayload,
       });
       this.deps.setStatus(agentId, "waiting_permission", `Needs your OK: ${summary}`);
+      this.deps.onPendingChange?.(agentId);
       signal?.addEventListener("abort", () => this.settle(request.id, "deny", STOPPED_BY_USER), { once: true });
     });
   }
@@ -116,5 +119,6 @@ export class PermissionBroker {
       metadata: { requestId, decision } satisfies PermissionResolvedPayload,
     });
     pending.resolve(decision === "allow" ? { behavior: "allow" } : { behavior: "deny", message: denyMessage });
+    this.deps.onPendingChange?.(pending.request.agentId);
   }
 }

@@ -1,5 +1,7 @@
 // Owns per-agent runtime state: the input queue, the runner, and the chat
 // messages a run produces. Uses the pure queue functions from src/shared.
+// Task inputs (pipeline handoffs) share the same FIFO queue as my chat messages;
+// they run in the task's own Claude session and report how they ended to the TaskHooks.
 
 import { CONFIG } from "../../src/shared/config.ts";
 import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
@@ -24,7 +26,7 @@ import type {
   UsageLimitPayload,
 } from "../../src/shared/events/eventPayloads.ts";
 import { newId } from "../../src/shared/ids.ts";
-import type { ChatHistoryPage } from "../../src/shared/protocol/protocol.ts";
+import type { ChatHistoryPage, ChatView } from "../../src/shared/protocol/protocol.ts";
 import type { World } from "../world/World.ts";
 import type { AgentRunner, AgentRunnerFactory, ToolEvent } from "./AgentRunner.ts";
 
@@ -41,6 +43,37 @@ interface AgentSlot {
   toolMessages: Map<string, string>;
   usage: TokenUsage | null;
   holdTimer: ReturnType<typeof setTimeout> | null;
+  /** The current run reported the Claude usage limit. */
+  hitUsageLimit: boolean;
+}
+
+/** How an input ended, for the pipeline. */
+export type InputResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: "stopped" | "error" | "usage_limit" | "interrupted"; message: string };
+
+/** The pipeline's side of task inputs. */
+export interface TaskHooks {
+  /** The task's Claude session for this agent, or null for a new one. */
+  sessionFor(taskId: string, agentId: string): string | null;
+  setSession(taskId: string, agentId: string, sessionId: string): void;
+  /** The agent's activity while it reads the input, e.g. "Reading plan from Pronelio Maximus". */
+  activityFor(input: AgentInput): string;
+  onInputStarted(input: AgentInput): void;
+  onInputEnded(input: AgentInput, result: InputResult): void;
+}
+
+export interface TaskInput {
+  agentId: string;
+  taskId: string;
+  text: string;
+  author: ChatAuthor;
+  fromAgentId: string | null;
+}
+
+export interface AgentManagerOptions {
+  /** How long a finished run shows its result before the next input starts (tests use 0). */
+  resultHoldMs?: number;
 }
 
 /** Writes an agent's note (the add_note tool) and returns the line written. Throws on bad input. */
@@ -53,11 +86,24 @@ export class AgentManager {
   private readonly world: World;
   private readonly createRunner: AgentRunnerFactory;
   private readonly writeNote: NoteWriter;
+  private readonly resultHoldMs: number;
+  private taskHooks: TaskHooks | null = null;
 
-  constructor(world: World, createRunner: AgentRunnerFactory, writeNote: NoteWriter = () => { throw new Error("Notes are not available"); }) {
+  constructor(
+    world: World,
+    createRunner: AgentRunnerFactory,
+    writeNote: NoteWriter = () => { throw new Error("Notes are not available"); },
+    options: AgentManagerOptions = {},
+  ) {
     this.world = world;
     this.createRunner = createRunner;
     this.writeNote = writeNote;
+    this.resultHoldMs = options.resultHoldMs ?? CONFIG.resultHoldMs;
+  }
+
+  /** The pipeline registers itself here (it is created after the manager). */
+  setTaskHooks(hooks: TaskHooks): void {
+    this.taskHooks = hooks;
   }
 
   /** Puts saved inputs back in their agents' queues (after a restart) and starts them. */
@@ -101,21 +147,63 @@ export class AgentManager {
 
   /** Creates the user's message and runs it now, or queues it while the agent is busy. */
   sendMessage(agentId: string, text: string): ChatMessage {
+    return this.enqueueInput(agentId, { kind: "user" }, text, null, null, `You → ${this.world.getAgent(agentId).name}`);
+  }
+
+  /**
+   * A pipeline step's input (handoff, answer, reminder): same queue as chat, in the task's session.
+   * `beforeStart` gets the message before the input can start (an idle agent starts it at once).
+   */
+  enqueueTaskInput(input: TaskInput, beforeStart?: (message: ChatMessage) => void): ChatMessage {
+    const from = input.fromAgentId === null ? "You" : this.world.getAgent(input.fromAgentId).name;
+    const feed = `${from} → ${this.world.getAgent(input.agentId).name}`;
+    return this.enqueueInput(input.agentId, input.author, input.text, input.taskId, input.fromAgentId, feed, beforeStart);
+  }
+
+  /** Removes a task's waiting inputs (and their messages) from every queue. Returns their ids. */
+  removeTaskInputs(taskId: string): string[] {
+    const removed: string[] = [];
+    for (const [agentId, slot] of this.slots) {
+      for (const input of slot.queue.queued) {
+        if (input.taskId !== taskId) continue;
+        this.cancelQueued(agentId, input.id);
+        removed.push(input.id);
+      }
+    }
+    return removed;
+  }
+
+  /** The agent running an input of this task, or null. */
+  runningTaskAgent(taskId: string): string | null {
+    for (const [agentId, slot] of this.slots) if (slot.queue.current?.taskId === taskId) return agentId;
+    return null;
+  }
+
+  private enqueueInput(
+    agentId: string,
+    author: ChatAuthor,
+    text: string,
+    taskId: string | null,
+    fromAgentId: string | null,
+    feedText: string,
+    beforeStart?: (message: ChatMessage) => void,
+  ): ChatMessage {
     const agent = this.world.getAgent(agentId);
     const project = this.world.projects.get(agent.projectId);
     if (project?.archived) throw new Error("Project is archived");
 
     const slot = this.slot(agentId);
     const busy = isBusy(slot.queue);
-    const message = this.createMessage(agentId, { kind: "user" }, text, busy ? "queued" : "delivered", null);
-    this.emitMessageCreated(agentId, message, `You → ${agent.name}`);
+    const message = this.createMessage(agentId, author, text, busy ? "queued" : "delivered", taskId);
+    this.emitMessageCreated(agentId, message, feedText);
+    beforeStart?.(message);
 
     const input: AgentInput = {
       id: message.id,
-      source: "user",
+      source: author.kind === "user" && taskId === null ? "user" : "handoff",
       text,
-      taskId: null,
-      fromAgentId: null,
+      taskId,
+      fromAgentId,
       enqueuedAt: message.createdAt,
     };
     slot.queue = enqueue(slot.queue, input);
@@ -139,10 +227,12 @@ export class AgentManager {
     this.clearHold(slot);
     this.endStreamingSegment(agentId, " [stopped]", "error");
     this.endOpenToolLines(agentId);
-    this.completeInputMessage(agentId, slot.queue.current);
+    const stopped = slot.queue.current;
+    this.completeInputMessage(agentId, stopped);
     slot.queue = finishCurrent(slot.queue);
     this.world.emit({ type: "agent.stopped", projectId: agent.projectId, agentId, message: `${agent.name} was stopped`, severity: "warning" });
     this.setIdle(agentId);
+    if (stopped !== null) this.reportEnded(stopped, { ok: false, reason: "stopped", message: `${agent.name} was stopped` });
     this.startNextIfIdle(agentId);
     return true;
   }
@@ -156,9 +246,12 @@ export class AgentManager {
     this.emitQueueChanged(agentId, { cancelledMessageId: messageId });
   }
 
-  /** Oldest first. `before` is a message id; returns up to `limit` messages older than it. */
-  getChatHistory(agentId: string, before?: string, limit: number = CONFIG.chatHistoryDefaultLimit): ChatHistoryPage {
-    const list = this.world.chatFor(agentId);
+  /**
+   * Oldest first. `before` is a message id; returns up to `limit` messages older than it.
+   * view "chat": messages outside tasks; "tasks": messages of pipeline tasks.
+   */
+  getChatHistory(agentId: string, before?: string, limit: number = CONFIG.chatHistoryDefaultLimit, view: ChatView = "chat"): ChatHistoryPage {
+    const list = this.world.chatFor(agentId).filter((m) => (view === "tasks") === (m.taskId !== null));
     let end = list.length;
     if (before !== undefined) {
       end = list.findIndex((m) => m.id === before);
@@ -192,6 +285,8 @@ export class AgentManager {
       if (slot.streamingMessageId !== null && this.world.findMessage(agentId, slot.streamingMessageId) !== undefined) {
         this.world.updateMessage(agentId, slot.streamingMessageId, {});
       }
+      const current = slot.queue.current;
+      if (current !== null) this.reportEnded(current, { ok: false, reason: "interrupted", message: "Server stopped" });
     }
   }
 
@@ -210,6 +305,7 @@ export class AgentManager {
         toolMessages: new Map(),
         usage: null,
         holdTimer: null,
+        hitUsageLimit: false,
       };
       this.slots.set(agentId, slot);
     }
@@ -231,6 +327,7 @@ export class AgentManager {
       this.emitQueueChanged(agentId, { startedMessageId: input.id });
     }
     this.begin(agentId, input);
+    if (input.taskId !== null) this.taskHooks?.onInputStarted(input);
   }
 
   private begin(agentId: string, input: AgentInput): void {
@@ -241,19 +338,23 @@ export class AgentManager {
     slot.lastReplyId = null;
     slot.toolMessages = new Map();
     slot.usage = null;
+    slot.hitUsageLimit = false;
 
     const agent = this.world.updateAgent(agentId, { busy: true, currentTaskId: input.taskId, lastError: null });
     this.syncQueueFields(agentId);
+    // Task inputs run in the task's own session, with the role's tools (chat only is for direct chat).
+    const taskId = input.taskId;
+    const hooks = taskId === null ? null : this.taskHooks;
     // Runners may take seconds before their first status (model thinking); never look idle while busy.
-    this.setStatus(agentId, "thinking", "Reading your message");
+    this.setStatus(agentId, "thinking", hooks === null ? "Reading your message" : hooks.activityFor(input));
 
     slot.runner.run(
       {
         agentId,
         text: input.text,
-        sessionId: agent.claudeSessionId,
+        sessionId: taskId === null || hooks === null ? agent.claudeSessionId : hooks.sessionFor(taskId, agentId),
         cwd: this.world.getProjectRoot(agent.projectId),
-        chatOnly: agent.chatOnly,
+        chatOnly: taskId === null ? agent.chatOnly : false,
       },
       {
         addNote: (text) => {
@@ -280,9 +381,9 @@ export class AgentManager {
           if (live()) this.applyToolEvent(agentId, input.taskId, event);
         },
         onSession: (sessionId) => {
-          if (live() && this.world.getAgent(agentId).claudeSessionId !== sessionId) {
-            this.world.updateAgent(agentId, { claudeSessionId: sessionId });
-          }
+          if (!live()) return;
+          if (taskId !== null && hooks !== null) hooks.setSession(taskId, agentId, sessionId);
+          else if (this.world.getAgent(agentId).claudeSessionId !== sessionId) this.world.updateAgent(agentId, { claudeSessionId: sessionId });
         },
         onAuth: (source) => {
           if (!live() || this.world.auth.source === source) return;
@@ -294,6 +395,7 @@ export class AgentManager {
         },
         onUsageLimit: (resetsAt) => {
           if (!live()) return;
+          slot.hitUsageLimit = true;
           this.world.usage = { limited: true, resetsAt };
           this.world.changed();
           this.world.emit({
@@ -322,6 +424,7 @@ export class AgentManager {
             this.world.changed();
           }
           this.finishRun(agentId, "success", "Done");
+          this.reportEnded(input, { ok: true, text: fullText });
         },
         onError: (error) => {
           if (!live()) return;
@@ -334,6 +437,7 @@ export class AgentManager {
           this.world.updateAgent(agentId, { lastError: error });
           this.world.emit({ type: "agent.error", projectId: current.projectId, agentId, message: `${current.name}: ${error}`, severity: "error" });
           this.finishRun(agentId, "error", error);
+          this.reportEnded(input, { ok: false, reason: slot.hitUsageLimit ? "usage_limit" : "error", message: error });
         },
       },
     );
@@ -351,7 +455,12 @@ export class AgentManager {
       slot.queue = finishCurrent(slot.queue);
       this.setIdle(agentId);
       this.startNextIfIdle(agentId);
-    }, CONFIG.resultHoldMs);
+    }, this.resultHoldMs);
+  }
+
+  /** Tells the pipeline how a task input ended (chat inputs have no listener). */
+  private reportEnded(input: AgentInput, result: InputResult): void {
+    if (input.taskId !== null) this.taskHooks?.onInputEnded(input, result);
   }
 
   /** A tool line in the chat: created when the tool starts, completed (or errored) when it finishes. */

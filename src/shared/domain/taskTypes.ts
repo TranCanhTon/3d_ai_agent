@@ -1,3 +1,5 @@
+import type { AgentRole } from "./roles.ts";
+
 export const WORKFLOW_PHASES = [
   "queued",
   "intake",
@@ -33,6 +35,8 @@ export const WORKFLOW_SIGNALS = [
   "picked_up",
   "delegated",
   "plan_ready",
+  /** The plan has no research questions: planning goes straight to implementation. */
+  "research_skipped",
   "findings_published",
   "submitted",
   "tests_passed",
@@ -42,6 +46,10 @@ export const WORKFLOW_SIGNALS = [
   "abort",
 ] as const;
 export type WorkflowSignal = (typeof WORKFLOW_SIGNALS)[number];
+
+/** How a task ended: done, failed (an error or too many attempts) or cancelled by me. */
+export const TASK_END_REASONS = ["done", "failed", "cancelled"] as const;
+export type TaskEndReason = (typeof TASK_END_REASONS)[number];
 
 export interface Subtask {
   id: string;
@@ -78,6 +86,15 @@ export interface Task {
   history: TaskTransition[];
   /** Set while the pipeline is paused: usage limit, waiting for permission, server restart. */
   blockedReason: string | null;
+  /** Claude session per role for this task (separate from each agent's chat session). */
+  sessions: Partial<Record<AgentRole, string>>;
+  /** Latest reply text per role in this task. */
+  outputs: Partial<Record<AgentRole, string>>;
+  /** sONion Ring's question to me while the task waits for my answer. */
+  question: string | null;
+  endReason: TaskEndReason | null;
+  /** The SUMMARY line written to the task log. */
+  summary: string | null;
 }
 
 export interface CreateTaskInput {

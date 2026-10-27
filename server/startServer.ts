@@ -19,6 +19,7 @@ import { PermissionBroker } from "./agents/PermissionBroker.ts";
 import { handleCommand } from "./commands.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { resolveBlockedRoots, resolveBrowserRoot } from "./projects/folders.ts";
+import { Pipeline } from "./pipeline/Pipeline.ts";
 import { ProjectService } from "./projects/ProjectService.ts";
 import { ensureSandbox } from "./sandbox.ts";
 import { DataStore } from "./store/DataStore.ts";
@@ -127,7 +128,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     Date.now,
     store,
   );
-  const savedQueues = world.load();
+  const saved = world.load();
 
   // The broker is created after the manager (it reports status through it); runners are created lazily.
   let permissions: PermissionBroker | null = null;
@@ -156,9 +157,32 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     if (projectService === null) throw new Error("Notes are not available yet");
     return projectService.addAgentNote(agentId, text);
   });
-  const projects = new ProjectService({ world, agents, browserRoot, blockedRoots });
+  // The pipeline is told about archives and permission cards, so it is bound late too.
+  let taskPipeline: Pipeline | null = null;
+  const projects = new ProjectService({
+    world,
+    agents,
+    browserRoot,
+    blockedRoots,
+    onArchive: (projectId) => taskPipeline?.onArchive(projectId),
+    onRestore: (projectId) => taskPipeline?.onRestore(projectId),
+  });
   projectService = projects;
-  permissions = new PermissionBroker({ world, setStatus: (id, status, activity) => agents.setStatus(id, status, activity) });
+  permissions = new PermissionBroker({
+    world,
+    setStatus: (id, status, activity) => agents.setStatus(id, status, activity),
+    onPendingChange: (agentId) => taskPipeline?.onPermissionChange(agentId),
+  });
+  const pipeline = new Pipeline({
+    world,
+    agents,
+    store,
+    writeTaskLog: (projectId, text) => projects.addTaskLog(projectId, text),
+    pendingPermissions: (agentId) => broker().pendingFor(agentId).length,
+  });
+  taskPipeline = pipeline;
+  agents.setTaskHooks(pipeline);
+  pipeline.load(saved.tasks);
 
   // First start: the Sandbox becomes a normal saved project.
   if (world.projects.size === 0) {
@@ -205,7 +229,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     const { id, command } = parsed.value;
     log(`client #${client.id} → ${command.name}${"agentId" in command.args ? ` ${command.args.agentId}` : ""}`);
     try {
-      const result = handleCommand(command, { world, agents, permissions: broker(), projects });
+      const result = handleCommand(command, { world, agents, permissions: broker(), projects, pipeline });
       send(client, { type: "ack", id, ok: true, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -287,7 +311,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   mkdirSync(dirname(options.tokenPath), { recursive: true });
   writeFileSync(options.tokenPath, token, { encoding: "utf8", mode: 0o600 });
   // Inputs that were waiting when the server stopped run again (only once this instance owns the port).
-  agents.restoreQueues(savedQueues);
+  agents.restoreQueues(saved.queues);
+  pipeline.start();
   log(`server listening on ws://${options.host}:${port} (runner: ${runnerKind}, ${world.projects.size} project(s), data: ${dataDir})`);
 
   let closed: Promise<void> | null = null;

@@ -10,6 +10,7 @@ import type { PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import { AGENT_ROLES } from "../domain/roles.ts";
 import {
+  TASK_END_REASONS,
   TASK_PRIORITIES,
   TASK_STATUSES,
   WORKFLOW_PHASES,
@@ -18,6 +19,7 @@ import {
 } from "../domain/taskTypes.ts";
 import { EVENT_SEVERITIES, EVENT_TYPES, type AgentEvent } from "../events/eventTypes.ts";
 import {
+  CHAT_VIEWS,
   COMM_LINK_KINDS,
   type ClientCommand,
   type ClientMessage,
@@ -84,6 +86,11 @@ export const taskSchema = z.object({
     }),
   ),
   blockedReason: z.string().nullable(),
+  sessions: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
+  outputs: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
+  question: z.string().nullable(),
+  endReason: z.enum(TASK_END_REASONS).nullable(),
+  summary: z.string().nullable(),
 });
 
 export const chatAuthorSchema = z.discriminatedUnion("kind", [
@@ -182,6 +189,7 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
   }),
   command("cancelTask", { taskId: id }),
   command("resumeTask", { taskId: id }),
+  command("answerTask", { taskId: id, text }),
   command("respondPermission", { requestId: id, decision: z.enum(["allow", "deny"]) }),
   command("pinToNotes", { messageId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
   command("getNotes", { projectId: id }),
@@ -189,6 +197,7 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
     agentId: id,
     before: id.optional(),
     limit: z.number().int().min(1).max(CONFIG.chatHistoryMaxLimit).optional(),
+    view: z.enum(CHAT_VIEWS).optional(),
   }),
   command("getSnapshot", {}),
 ]);
@@ -240,6 +249,7 @@ export const commandResultSchemas = {
   submitTask: taskSchema,
   cancelTask: z.null(),
   resumeTask: z.null(),
+  answerTask: z.null(),
   respondPermission: z.null(),
   pinToNotes: z.null(),
   getNotes: z.string(),
