@@ -7,7 +7,7 @@
     "node": ">=22.6"
   },
   "scripts": {
-    "dev": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts\"",
+    "dev": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts < NUL\"",
     "dev:web": "next dev",
     "dev:server": "tsx watch --no-cache server/index.ts",
     "build": "next build",

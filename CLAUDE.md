@@ -70,6 +70,7 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - Drive C: is full. Never write anything to C:. The project lives in `D:\3d-ai-agent`; npm uses `.npm-cache/` (project `.npmrc`); temp files go to `.tmp/` (`.claude/settings.local.json` sets TEMP, TMP, NODE_COMPILE_CACHE). When starting processes yourself, set those env vars too.
 - Run `bd` with `BD_DISABLE_METRICS=1` and `BD_DISABLE_EVENT_FLUSH=1`, otherwise it writes to `C:\Users\ACER\.beads`. Both are set in `.claude/settings.json` and the `.beads/hooks`.
 - Scripts must work on Windows: no bash-only syntax, no `&` backgrounding, no `export VAR=`.
+- `npm run dev` gives `tsx watch` its stdin from `NUL`: concurrently hands each command a stdin pipe, and with a pipe tsx watch's own stdin reading stalls the server child on Windows (it never reaches listen). The cost: Return no longer restarts the server, and tsx watch exits when the server exits.
 
 ## Commit messages
 
