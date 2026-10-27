@@ -31,6 +31,15 @@ export const STEP_ENDING: Record<PipelineStep, string> = {
   summary: "SUMMARY:",
 };
 
+/** Pause reasons the pipeline sets itself (a run error pauses with its error line). */
+export const PAUSE = {
+  stopped: "Stopped by you",
+  restarted: "Server restarted",
+  archived: "Project archived",
+  question: "Waiting for your answer",
+  permission: "Waiting for your OK",
+} as const;
+
 // ── Marker parser ───────────────────────────────────────────────────────────
 
 export const MARKERS = [

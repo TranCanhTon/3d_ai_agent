@@ -3,20 +3,23 @@
 // Temporary dev page. Replaced by the real UI in phase 6.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { connectBackend, getBackend, selectAgent } from "@/client/backendClient.ts";
+import { connectBackend, getBackend, loadTaskHistory, selectAgent } from "@/client/backendClient.ts";
 import type { ConnectionStatus } from "@/shared/backend/AgentBackend.ts";
 import { CONFIG } from "@/shared/config.ts";
 import type { AgentState } from "@/shared/domain/agentTypes.ts";
 import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
 import type { PermissionRequest } from "@/shared/domain/permissions.ts";
 import type { Project } from "@/shared/domain/projectTypes.ts";
+import { PAUSE } from "@/shared/domain/handoff.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
-import type { FolderEntry, FolderListing } from "@/shared/protocol/protocol.ts";
-import { useWorldStore } from "@/state/useWorldStore.ts";
+import { TASK_PRIORITIES, type Task, type TaskPriority } from "@/shared/domain/taskTypes.ts";
+import type { ChatView, FolderEntry, FolderListing } from "@/shared/protocol/protocol.ts";
+import { chatKey, useWorldStore } from "@/state/useWorldStore.ts";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_REQUESTS: PermissionRequest[] = [];
 const EMPTY_PROJECTS: Project[] = [];
+const EMPTY_TASKS: Task[] = [];
 const API_BILLING_SOURCES = new Set(["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"]);
 
 const STATUS_STYLE: Record<ConnectionStatus, { dot: string; label: string }> = {
@@ -352,6 +355,189 @@ function NotesPanel({ project }: { project: Project }) {
   );
 }
 
+function NewTaskForm({ project }: { project: Project }) {
+  const connected = useWorldStore((s) => s.connectionStatus === "open");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [priority, setPriority] = useState<TaskPriority>("medium");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = () => {
+    setBusy(true);
+    setError(null);
+    getBackend()
+      .submitTask({ projectId: project.id, title: title.trim(), description: description.trim(), priority })
+      .then(() => {
+        setTitle("");
+        setDescription("");
+        setPriority("medium");
+      })
+      .catch((e: unknown) => setError(errorText(e)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <form
+      className="flex flex-col gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          className="min-w-0 flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-sm outline-none focus:border-signal"
+          placeholder="New task title"
+          maxLength={CONFIG.maxTaskTitleChars}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <select
+          aria-label="Priority"
+          className="rounded-md border border-ink-600 bg-ink-900 px-2 py-1.5 text-sm"
+          value={priority}
+          onChange={(e) => setPriority(e.target.value as TaskPriority)}
+        >
+          {TASK_PRIORITIES.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          className="rounded-md bg-signal px-4 py-2 text-sm font-medium text-ink-950 disabled:opacity-40"
+          disabled={!connected || busy || title.trim().length === 0 || project.archived}
+        >
+          New task
+        </button>
+      </div>
+      <textarea
+        className="min-h-16 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-sm outline-none focus:border-signal"
+        placeholder="Description (what you want, where, what done looks like)"
+        maxLength={CONFIG.maxMessageChars}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+      {error !== null && <p className="text-xs text-bad">{error}</p>}
+    </form>
+  );
+}
+
+function TaskRow({ task }: { task: Task }) {
+  const connected = useWorldStore((s) => s.connectionStatus === "open");
+  const agentName = useWorldStore((s) => s.snapshot?.agents.find((a) => a.id === task.assignedAgentId)?.name ?? null);
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const ended = task.endReason !== null;
+  const canResume = !ended && task.blockedReason !== null && task.question === null && task.blockedReason !== PAUSE.permission;
+
+  const run = (action: Promise<unknown>, after?: () => void) => {
+    setError(null);
+    action.then(after).catch((e: unknown) => setError(errorText(e)));
+  };
+
+  return (
+    <li className="surface flex flex-col gap-2 rounded-lg p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-medium" title={task.description}>
+          {task.title}
+        </span>
+        <span className="font-mono text-[11px] text-mist-500">{task.priority}</span>
+        <span className={`font-mono text-xs ${task.status === "blocked" ? "text-warn" : task.endReason === "done" ? "text-ok" : ended ? "text-bad" : "text-mist-300"}`}>
+          {ended ? task.endReason : `${task.phase} · ${task.status}`}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-ink-900" aria-label={`${Math.round(task.progress * 100)}% done`}>
+        <div className="h-full rounded-full bg-signal" style={{ width: `${Math.round(task.progress * 100)}%` }} />
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mist-500">
+        {task.iteration > 0 && (
+          <span>
+            attempt {task.iteration}/{CONFIG.maxIterations}
+          </span>
+        )}
+        {agentName !== null && !ended && <span>with {agentName}</span>}
+        {task.subtasks.length > 0 && <span>{task.subtasks.length} plan steps</span>}
+        {task.blockedReason !== null && <span className="text-warn">paused: {task.blockedReason}</span>}
+        {task.summary !== null && <span className="text-mist-300">{task.summary}</span>}
+        <span className="flex-1" />
+        {canResume && (
+          <button type="button" className="text-signal hover:underline disabled:opacity-40" disabled={!connected} onClick={() => run(getBackend().resumeTask({ taskId: task.id }))}>
+            Resume
+          </button>
+        )}
+        {!ended && (
+          <button
+            type="button"
+            className="text-bad hover:underline disabled:opacity-40"
+            disabled={!connected}
+            onClick={() => {
+              if (!window.confirm(`Cancel "${task.title}"? The running step stops.`)) return;
+              run(getBackend().cancelTask({ taskId: task.id }));
+            }}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      {task.question !== null && (
+        <form
+          className="flex flex-col gap-2 rounded-md border border-warn/40 bg-warn/10 p-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const text = answer.trim();
+            if (text === "") return;
+            run(getBackend().answerTask({ taskId: task.id, text }), () => setAnswer(""));
+          }}
+        >
+          <p className="whitespace-pre-wrap text-sm text-mist-100">{task.question}</p>
+          <div className="flex gap-2">
+            <input
+              className="min-w-0 flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-1.5 text-sm outline-none focus:border-signal"
+              placeholder="Your answer"
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+            />
+            <button type="submit" className={BUTTON} disabled={!connected || answer.trim() === ""}>
+              Answer
+            </button>
+          </div>
+        </form>
+      )}
+      {error !== null && <p className="text-xs text-bad">{error}</p>}
+    </li>
+  );
+}
+
+function TaskPanel({ project }: { project: Project }) {
+  const allTasks = useWorldStore((s) => s.snapshot?.tasks ?? EMPTY_TASKS);
+  // Active first, then waiting, then ended; newest first within each.
+  const tasks = useMemo(() => {
+    const rank = (t: Task) => (t.endReason !== null ? 2 : t.phase === "queued" ? 1 : 0);
+    return allTasks.filter((t) => t.projectId === project.id).sort((a, b) => rank(a) - rank(b) || b.createdAt - a.createdAt);
+  }, [allTasks, project.id]);
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="eyebrow">Tasks · {project.name}</h2>
+      <div className="surface flex flex-col gap-3 rounded-xl p-3">
+        <NewTaskForm project={project} />
+        {tasks.length === 0 ? (
+          <p className="text-sm text-mist-500">No tasks yet.</p>
+        ) : (
+          <ul className="scroll-thin flex max-h-96 flex-col gap-2 overflow-y-auto">
+            {tasks.map((t) => (
+              <TaskRow key={t.id} task={t} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function AgentList({ project }: { project: Project | null }) {
   const snapshot = useWorldStore((s) => s.snapshot);
   const selectedAgentId = useWorldStore((s) => s.selectedAgentId);
@@ -527,9 +713,10 @@ function MessageView({ message, agentId, onError }: { message: ChatMessage; agen
     );
   }
 
-  const mine = kind === "user";
+  const mine = kind === "user" || kind === "handoff";
   return (
     <div className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
+      {message.author.kind === "handoff" && <HandoffFrom agentId={message.author.fromAgentId} />}
       <div
         className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm ${
           mine ? "bg-ink-600 text-mist-100" : "bg-ink-800 text-mist-100"
@@ -567,14 +754,59 @@ function MessageView({ message, agentId, onError }: { message: ChatMessage; agen
   );
 }
 
+function HandoffFrom({ agentId }: { agentId: string }) {
+  const name = useWorldStore((s) => s.snapshot?.agents.find((a) => a.id === agentId)?.name ?? agentId);
+  return <span className="eyebrow mb-0.5">handoff from {name}</span>;
+}
+
+/** The Tasks tab: the agent's task messages grouped by task, newest task first. */
+function TaskMessages({ agent, messages, onError }: { agent: AgentState; messages: ChatMessage[]; onError: (m: string) => void }) {
+  const tasks = useWorldStore((s) => s.snapshot?.tasks ?? EMPTY_TASKS);
+  const groups = useMemo(() => {
+    const byTask = new Map<string, ChatMessage[]>();
+    for (const m of messages) {
+      if (m.taskId === null) continue;
+      byTask.set(m.taskId, [...(byTask.get(m.taskId) ?? []), m]);
+    }
+    const created = (taskId: string) => tasks.find((t) => t.id === taskId)?.createdAt ?? byTask.get(taskId)?.[0]?.createdAt ?? 0;
+    return [...byTask.entries()].sort((a, b) => created(b[0]) - created(a[0]));
+  }, [messages, tasks]);
+
+  if (groups.length === 0) return <p className="text-sm text-mist-500">No task messages yet.</p>;
+  return (
+    <>
+      {groups.map(([taskId, list]) => {
+        const task = tasks.find((t) => t.id === taskId);
+        return (
+          <section key={taskId} className="flex flex-col gap-2 border-t border-ink-600 pt-2 first:border-t-0 first:pt-0">
+            <h3 className="eyebrow">
+              {task?.title ?? taskId}
+              {task !== undefined ? ` · ${task.endReason ?? task.phase}` : ""}
+            </h3>
+            {list.map((m) => (
+              <MessageView key={m.id} message={m} agentId={agent.id} onError={onError} />
+            ))}
+          </section>
+        );
+      })}
+    </>
+  );
+}
+
 function ChatPanel({ agent }: { agent: AgentState }) {
-  const messages = useWorldStore((s) => s.chats[agent.id] ?? EMPTY_MESSAGES);
+  const [tab, setTab] = useState<ChatView>("chat");
+  const messages = useWorldStore((s) => s.chats[chatKey(agent.id, tab)] ?? EMPTY_MESSAGES);
+  const tasksLoaded = useWorldStore((s) => s.historyLoaded[chatKey(agent.id, "tasks")] === true);
   const allRequests = useWorldStore((s) => s.snapshot?.pendingPermissions ?? EMPTY_REQUESTS);
   const requests = useMemo(() => allRequests.filter((r) => r.agentId === agent.id), [allRequests, agent.id]);
   const connected = useWorldStore((s) => s.connectionStatus === "open");
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (tab === "tasks" && connected && !tasksLoaded) loadTaskHistory(agent.id);
+  }, [tab, connected, tasksLoaded, agent.id]);
 
   // Scroll only the chat pane (scrollIntoView would also scroll the page and move the Stop button).
   useEffect(() => {
@@ -648,37 +880,60 @@ function ChatPanel({ agent }: { agent: AgentState }) {
         </div>
       </header>
 
-      <div ref={scrollRef} className="scroll-thin flex max-h-[60vh] min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-4">
-        {messages.length === 0 && requests.length === 0 && <p className="text-sm text-mist-500">No messages yet.</p>}
-        {messages.map((m) => (
-          <MessageView key={m.id} message={m} agentId={agent.id} onError={setError} />
+      <div className="flex gap-1 border-b border-ink-600 px-3 pt-2" role="tablist">
+        {(["chat", "tasks"] as const).map((view) => (
+          <button
+            key={view}
+            type="button"
+            role="tab"
+            aria-selected={tab === view}
+            className={`rounded-t-md px-3 py-1.5 text-sm ${tab === view ? "bg-ink-800 text-mist-100" : "text-mist-500 hover:text-mist-300"}`}
+            onClick={() => setTab(view)}
+          >
+            {view === "chat" ? "Chat" : "Tasks"}
+          </button>
         ))}
+      </div>
+
+      <div ref={scrollRef} className="scroll-thin flex max-h-[60vh] min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-4">
+        {tab === "chat" ? (
+          <>
+            {messages.length === 0 && requests.length === 0 && <p className="text-sm text-mist-500">No messages yet.</p>}
+            {messages.map((m) => (
+              <MessageView key={m.id} message={m} agentId={agent.id} onError={setError} />
+            ))}
+          </>
+        ) : (
+          <TaskMessages agent={agent} messages={messages} onError={setError} />
+        )}
         {requests.map((r) => (
           <PermissionCard key={r.id} request={r} onError={setError} />
         ))}
       </div>
 
-      <form
-        className="flex gap-2 border-t border-ink-600 p-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <input
-          className="min-w-0 flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-sm outline-none focus:border-signal"
-          placeholder={`Message ${agent.name}`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="rounded-md bg-signal px-4 py-2 text-sm font-medium text-ink-950 disabled:opacity-40"
-          disabled={!connected || draft.trim().length === 0}
+      {tab === "chat" && (
+        <form
+          className="flex gap-2 border-t border-ink-600 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
         >
-          Send
-        </button>
-      </form>
+          <input
+            className="min-w-0 flex-1 rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-sm outline-none focus:border-signal"
+            placeholder={`Message ${agent.name}`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="rounded-md bg-signal px-4 py-2 text-sm font-medium text-ink-950 disabled:opacity-40"
+            disabled={!connected || draft.trim().length === 0}
+          >
+            Send
+          </button>
+        </form>
+      )}
       {error !== null && <p className="px-4 pb-3 text-xs text-bad">{error}</p>}
     </div>
   );
@@ -745,6 +1000,8 @@ export function DevConsole() {
           </div>
         )}
       </div>
+
+      {project !== null && !project.archived && <TaskPanel project={project} />}
 
       {project !== null && <NotesPanel project={project} />}
 

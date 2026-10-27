@@ -17,6 +17,7 @@ import {
   implementationHandoff,
   intakeHandoff,
   parseReply,
+  PAUSE,
   planningHandoff,
   readStepResult,
   reminderText,
@@ -41,15 +42,6 @@ import type { CommandArgsMap } from "../../src/shared/protocol/protocol.ts";
 import type { AgentManager, InputResult, TaskHooks } from "../agents/AgentManager.ts";
 import type { DataStore, SavedHandoff, SavedTask } from "../store/DataStore.ts";
 import type { World } from "../world/World.ts";
-
-/** Pause reasons the pipeline sets itself (errors use the error line). */
-export const PAUSE = {
-  stopped: "Stopped by you",
-  restarted: "Server restarted",
-  archived: "Project archived",
-  question: "Waiting for your answer",
-  permission: "Waiting for your OK",
-} as const;
 
 export interface PipelineDeps {
   world: World;

@@ -8,15 +8,25 @@ import type { ConnectionStatus } from "@/shared/backend/AgentBackend.ts";
 import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
 import { eventPayloadSchemas, readPayload } from "@/shared/events/eventPayloads.ts";
 import type { AgentEvent } from "@/shared/events/eventTypes.ts";
-import type { WorldSnapshot } from "@/shared/protocol/protocol.ts";
+import type { ChatView, WorldSnapshot } from "@/shared/protocol/protocol.ts";
+
+/** Key in `chats`: an agent's direct chat, or its task messages (the Tasks tab). */
+export function chatKey(agentId: string, view: ChatView = "chat"): string {
+  return view === "chat" ? agentId : `${agentId}#tasks`;
+}
+
+function messageKey(message: ChatMessage): string {
+  return chatKey(message.agentId, message.taskId === null ? "chat" : "tasks");
+}
 
 export interface WorldStore {
   connectionStatus: ConnectionStatus;
   snapshot: WorldSnapshot | null;
   selectedProjectId: string | null;
   selectedAgentId: string | null;
-  /** Per agent, oldest first. */
+  /** Per chatKey (direct chat or task messages of an agent), oldest first. */
   chats: Record<string, ChatMessage[]>;
+  /** Per chatKey. */
   historyLoaded: Record<string, boolean>;
   /** Newest first, at most maxStoredEvents. */
   events: AgentEvent[];
@@ -27,8 +37,8 @@ export interface WorldStore {
   /** Also clears the selected agent when it belongs to another project. */
   setSelectedProject(projectId: string | null): void;
   setSelectedAgent(agentId: string | null): void;
-  /** Merges a loaded history page with messages that arrived live. */
-  setHistory(agentId: string, messages: ChatMessage[]): void;
+  /** Merges a loaded history page with messages that arrived live. `key` is a chatKey. */
+  setHistory(key: string, messages: ChatMessage[]): void;
   /** Forget chats (after a reconnect the server may have restarted). */
   resetChats(): void;
 }
@@ -36,7 +46,8 @@ export interface WorldStore {
 function snapshotSignature(snapshot: WorldSnapshot): string {
   const agents = snapshot.agents.map((a) => `${a.id}|${a.status}|${a.busy}|${a.queuedCount}|${a.chatOnly}`).join(";");
   const projects = snapshot.projects.map((p) => `${p.id}|${p.archived}`).join(";");
-  return `${agents}#${projects}#${snapshot.tasks.length}#${snapshot.pendingPermissions.length}`;
+  const tasks = snapshot.tasks.map((t) => `${t.id}|${t.phase}|${t.blockedReason ?? ""}|${t.endReason ?? ""}`).join(";");
+  return `${agents}#${projects}#${tasks}#${snapshot.pendingPermissions.length}`;
 }
 
 function upsert(list: ChatMessage[] | undefined, message: ChatMessage): ChatMessage[] {
@@ -68,23 +79,28 @@ function applyChatEvent(chats: Record<string, ChatMessage[]>, event: AgentEvent)
   const created = readPayload(event, ["chat.message_created", "chat.message_completed"], eventPayloadSchemas.chatMessage);
   if (created !== null) {
     const { message } = created;
-    return { ...chats, [message.agentId]: upsert(chats[message.agentId], message) };
+    const key = messageKey(message);
+    return { ...chats, [key]: upsert(chats[key], message) };
   }
 
   const agentId = event.agentId;
   if (agentId === undefined) return chats;
+  // Deltas and queue changes only name the message: it is in one of the agent's two lists.
+  const keys = [chatKey(agentId, "chat"), chatKey(agentId, "tasks")];
 
   const delta = readPayload(event, "chat.message_delta", eventPayloadSchemas.chatDelta);
   if (delta !== null) {
-    return updateMessage(chats, agentId, delta.messageId, (m) => ({ ...m, text: m.text + delta.delta }));
+    return keys.reduce((next, key) => updateMessage(next, key, delta.messageId, (m) => ({ ...m, text: m.text + delta.delta })), chats);
   }
 
   const queue = readPayload(event, "agent.queue_changed", eventPayloadSchemas.queueChanged);
   if (queue !== null) {
     let next = chats;
-    if (queue.cancelledMessageId !== undefined) next = updateMessage(next, agentId, queue.cancelledMessageId, () => null);
-    if (queue.startedMessageId !== undefined) {
-      next = updateMessage(next, agentId, queue.startedMessageId, (m) => ({ ...m, status: "delivered" }));
+    for (const key of keys) {
+      if (queue.cancelledMessageId !== undefined) next = updateMessage(next, key, queue.cancelledMessageId, () => null);
+      if (queue.startedMessageId !== undefined) {
+        next = updateMessage(next, key, queue.startedMessageId, (m) => ({ ...m, status: "delivered" }));
+      }
     }
     return next;
   }
@@ -144,14 +160,14 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
 
     setSelectedAgent: (selectedAgentId) => set({ selectedAgentId }),
 
-    setHistory: (agentId, messages) =>
+    setHistory: (key, messages) =>
       set((state) => {
-        const live = state.chats[agentId] ?? [];
+        const live = state.chats[key] ?? [];
         const liveIds = new Set(live.map((m) => m.id));
         const merged = [...messages.filter((m) => !liveIds.has(m.id)), ...live].sort((a, b) => a.createdAt - b.createdAt);
         return {
-          chats: { ...state.chats, [agentId]: merged },
-          historyLoaded: { ...state.historyLoaded, [agentId]: true },
+          chats: { ...state.chats, [key]: merged },
+          historyLoaded: { ...state.historyLoaded, [key]: true },
         };
       }),
 

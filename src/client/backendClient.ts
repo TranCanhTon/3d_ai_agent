@@ -1,7 +1,9 @@
 // Singleton backend + wiring into the Zustand store.
 
 import type { AgentBackend } from "@/shared/backend/AgentBackend.ts";
-import { useWorldStore } from "@/state/useWorldStore.ts";
+import { CONFIG } from "@/shared/config.ts";
+import type { ChatView } from "@/shared/protocol/protocol.ts";
+import { chatKey, useWorldStore } from "@/state/useWorldStore.ts";
 import { fetchSessionToken, WebSocketAgentBackend } from "./WebSocketAgentBackend.ts";
 
 let backend: WebSocketAgentBackend | null = null;
@@ -11,10 +13,18 @@ export function getBackend(): AgentBackend {
   return backend;
 }
 
-/** Loads an agent's chat history into the store (once per connection). */
-export async function loadChatHistory(agentId: string): Promise<void> {
-  const page = await getBackend().getChatHistory({ agentId });
-  useWorldStore.getState().setHistory(agentId, page.messages);
+/** Loads an agent's chat history (or its task messages) into the store. */
+export async function loadChatHistory(agentId: string, view: ChatView = "chat"): Promise<void> {
+  const page = await getBackend().getChatHistory(
+    view === "chat" ? { agentId } : { agentId, view, limit: CONFIG.chatHistoryMaxLimit },
+  );
+  useWorldStore.getState().setHistory(chatKey(agentId, view), page.messages);
+}
+
+/** The Tasks tab: loads the agent's task messages once per connection. */
+export function loadTaskHistory(agentId: string): void {
+  if (useWorldStore.getState().historyLoaded[chatKey(agentId, "tasks")]) return;
+  loadChatHistory(agentId, "tasks").catch((error: unknown) => console.warn("[backend] task history load failed", error));
 }
 
 export function selectAgent(agentId: string | null): void {
