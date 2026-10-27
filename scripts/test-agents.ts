@@ -10,7 +10,8 @@ import { assertSubscriptionBilling, BillingGuardError, buildAgentEnv, ClaudeRunn
 import { addNoteTool } from "../server/agents/claude/notesTool.ts";
 import { describeTool } from "../server/agents/claude/toolSummary.ts";
 import { NOT_LOGGED_IN, translate, type TranslatorAction } from "../server/agents/claude/translate.ts";
-import { buildRolePrompt, CHAT_ONLY_LINE } from "../server/roles/rolePrompts.ts";
+import { buildRolePrompt, CHAT_ONLY_LINE, NO_NOTES_LINE, notesSection } from "../server/roles/rolePrompts.ts";
+import { appendNoteLine, ensureNotesFile } from "../server/projects/notes.ts";
 import { AGENT_ROLES, ROLE_DEFINITIONS } from "../src/shared/domain/roles.ts";
 import { DENIED_BY_USER, PermissionBroker, STOPPED_BY_USER } from "../server/agents/PermissionBroker.ts";
 import { silentLogger } from "../server/log.ts";
@@ -506,7 +507,8 @@ await check("each role's prompt has its name, the team line with Rabies and the 
     const prompt = buildRolePrompt(ROLES_DIR, role, SHOP, false);
     assert.ok(prompt.startsWith(`You are ${ROLE_DEFINITIONS[role].name}`), role);
     assert.ok(prompt.includes("Team: sONion Ring (Orchestrator)") && prompt.includes("Rabies (Code Reviewer)."), role);
-    assert.ok(prompt.includes("Shared rules:\nRead .agentworld/notes.md before starting work."), role);
+    assert.ok(prompt.includes("Shared rules:\nIf the user makes a decision"), role);
+    assert.ok(!prompt.includes("Read .agentworld/notes.md"), role);
     assert.ok(prompt.endsWith(`\n\nProject folder: ${SHOP}`), role);
     assert.ok(!prompt.includes(CHAT_ONLY_LINE));
   }
@@ -515,6 +517,46 @@ await check("each role's prompt has its name, the team line with Rabies and the 
 await check("chat only adds the chat only line at the end", () => {
   const prompt = buildRolePrompt(ROLES_DIR, "researcher", SHOP, true);
   assert.ok(prompt.endsWith(`Project folder: ${SHOP}\n\n${CHAT_ONLY_LINE}`));
+});
+
+await check("team notes come after the shared rules, without the header", () => {
+  const root = join(tmpDir, "notes-prompt");
+  appendNoteLine(root, "- We use Tailwind (STD Dren, 2026-01-01)");
+  appendNoteLine(root, "- Keep the API stable (pinned by you, 2026-01-02)");
+  const prompt = buildRolePrompt(ROLES_DIR, "engineer", root, false);
+  const notes = "Team notes (.agentworld/notes.md):\n- We use Tailwind (STD Dren, 2026-01-01)\n- Keep the API stable (pinned by you, 2026-01-02)";
+  assert.ok(prompt.indexOf("Team: sONion Ring") < prompt.indexOf(notes), prompt);
+  assert.ok(prompt.endsWith(`${notes}\n\nProject folder: ${root}`), prompt);
+  assert.ok(!prompt.includes("# Team notes"));
+});
+
+await check("missing or empty notes: 'Team notes: none yet.'", () => {
+  assert.ok(buildRolePrompt(ROLES_DIR, "qa", join(tmpDir, "no-such-project"), false).includes(`\n\n${NO_NOTES_LINE}\n\n`));
+  const empty = join(tmpDir, "empty-notes");
+  ensureNotesFile(empty);
+  assert.ok(buildRolePrompt(ROLES_DIR, "qa", empty, false).includes(NO_NOTES_LINE));
+  assert.equal(notesSection("# Team notes\n\n   \n"), NO_NOTES_LINE);
+});
+
+await check("notes over notesPromptMaxChars keep the newest lines that fit", () => {
+  const lines = Array.from({ length: 400 }, (_, i) => `- note number ${i} with some padding text (STD Dren, 2026-01-01)`);
+  const section = notesSection(`# Team notes\n\n${lines.join("\n")}\n`);
+  const body = section.slice(section.indexOf("\n") + 1);
+  assert.ok(section.startsWith("Team notes (.agentworld/notes.md):\n(Older notes are in .agentworld/notes.md.)\n"));
+  assert.ok(body.length <= CONFIG.notesPromptMaxChars, String(body.length));
+  assert.ok(body.endsWith(lines[399] ?? "x"));
+  assert.ok(!body.includes("note number 0 "));
+  const kept = body.split("\n").slice(1);
+  assert.deepEqual(kept, lines.slice(lines.length - kept.length), "a run of the newest lines");
+  assert.ok(body.length + (lines[0]?.length ?? 0) + 1 > CONFIG.notesPromptMaxChars, "as many lines as fit");
+  assert.equal(notesSection("# Team notes\n\n- short\n", 10_000), "Team notes (.agentworld/notes.md):\n- short");
+});
+
+await check("chat only prompts get the notes too", () => {
+  const root = join(tmpDir, "notes-prompt");
+  const prompt = buildRolePrompt(ROLES_DIR, "researcher", root, true);
+  assert.ok(prompt.includes("- We use Tailwind (STD Dren, 2026-01-01)"));
+  assert.ok(prompt.endsWith(`Project folder: ${root}\n\n${CHAT_ONLY_LINE}`));
 });
 
 await check("role files are copied as given (verdict lines and section markers)", () => {

@@ -1,5 +1,4 @@
 Shared rules:
-Read .agentworld/notes.md before starting work.
 If the user makes a decision that affects the project, record it in one line with the add_note tool. Do not log routine progress.
 When the user chats with you directly, help as your role. If the request belongs to a teammate, say who.
 Keep replies short.
