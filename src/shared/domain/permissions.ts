@@ -5,15 +5,18 @@
 //    Claude's name for our note tool (mcp__agentworld__add_note) counts as add_note.
 // 2. Read, Grep, Glob, WebSearch, WebFetch, add_note: allow.
 // 3. Edit, Write: ask.
-// 4. Bash running git: blocked pattern deny; commit/push by capability;
-//    read-only git per config; any other git ask.
-// 5. Any other Bash: ask.
+// 4. Bash, per config.shell: denied commands (blocked git patterns, recursive deletes,
+//    sudo/shutdown/format..., a download piped into a shell) deny for every role;
+//    look around, search, versions, read-only git and project checks allow;
+//    commit/push by capability; everything else asks.
+// 5. The reviewer only gets look around, search, versions and read-only git:
+//    anything else he tries is denied, not asked.
 //
 // Bash commands are split into parts (&&, ||, ;, |, &, newlines, subshells,
 // command substitutions) and every part is checked; the strictest verdict wins.
-// Anything the scanner is unsure about is at least "ask".
+// Anything the scanner is unsure about (redirects, substitutions, unclear quoting) is at least "ask".
 
-import type { AppConfig, GitPolicy } from "../config.ts";
+import type { AppConfig, ShellGroup, ShellPolicy } from "../config.ts";
 import { canonicalToolName, ROLE_DEFINITIONS, TOOL_NAMES, type AgentRole, type ToolName } from "./roles.ts";
 
 export interface PermissionRequest {
@@ -54,11 +57,14 @@ function isToolName(name: string): name is ToolName {
   return (TOOL_NAMES as readonly string[]).includes(name);
 }
 
+/** The parts of the config the rules read. */
+export type PermissionConfig = Pick<AppConfig, "git" | "shell">;
+
 export function evaluatePermission(
   role: AgentRole,
   toolName: string,
   input: unknown,
-  config: Pick<AppConfig, "git">,
+  config: PermissionConfig,
   allowedTools?: readonly ToolName[],
 ): PermissionVerdict {
   return explainPermission(role, toolName, input, config, allowedTools).verdict;
@@ -69,7 +75,7 @@ export function explainPermission(
   role: AgentRole,
   rawToolName: string,
   input: unknown,
-  config: Pick<AppConfig, "git">,
+  config: PermissionConfig,
   allowedTools?: readonly ToolName[],
 ): PermissionOutcome {
   const definition = ROLE_DEFINITIONS[role];
@@ -84,7 +90,14 @@ export function explainPermission(
   // Bash
   const command = readBashCommand(input);
   if (command === null) return outcome("deny", "Bash call without a command");
-  return evaluateBash(role, command, config.git, 0);
+  const result = evaluateBash(role, command, config, 0);
+  // The reviewer never gets a card: what is not on his list is denied.
+  if (role === "reviewer" && result.verdict === "ask") return outcome("deny", reviewerReason());
+  return result;
+}
+
+function reviewerReason(): string {
+  return `${ROLE_DEFINITIONS.reviewer.name} only reviews: git read and look-around commands`;
 }
 
 function readBashCommand(input: unknown): string | null {
@@ -93,7 +106,14 @@ function readBashCommand(input: unknown): string | null {
   return typeof command === "string" ? command : null;
 }
 
-function evaluateBash(role: AgentRole, command: string, policy: GitPolicy, depth: number): PermissionOutcome {
+/** An outcome plus the allow-list group that allowed it (the reviewer only gets some groups). */
+interface Classified extends PermissionOutcome {
+  group?: ShellGroup;
+}
+
+const allowIn = (group: ShellGroup, reason: string): Classified => ({ verdict: "allow", reason, group });
+
+function evaluateBash(role: AgentRole, command: string, config: PermissionConfig, depth: number): PermissionOutcome {
   if (depth > MAX_NESTING) return outcome("ask", "deeply nested shell command");
   const scan = scanShell(command);
   const outcomes: PermissionOutcome[] = [];
@@ -101,42 +121,129 @@ function evaluateBash(role: AgentRole, command: string, policy: GitPolicy, depth
   if (scan.segments.length === 0 || scan.unterminated || scan.hasRedirect || scan.substitutions.length > 0) {
     outcomes.push(outcome("ask", "shell command with redirects, substitutions or unclear quoting"));
   }
-  for (const sub of scan.substitutions) outcomes.push(evaluateBash(role, sub, policy, depth + 1));
-  for (const tokens of scan.segments) outcomes.push(evaluateSegment(role, tokens, policy, depth));
+  for (const sub of scan.substitutions) outcomes.push(evaluateBash(role, sub, config, depth + 1));
+  for (const tokens of scan.segments) outcomes.push(evaluateSegment(role, tokens, config, depth));
+  const download = pipedDownload(scan, config.shell);
+  if (download !== null) outcomes.push(download);
 
   return strictest(...outcomes);
 }
 
 const SHELLS: ReadonlySet<string> = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd"]);
+/** Shells whose command option takes the rest of the line, not one argument. */
+const REST_OF_LINE_SHELLS: ReadonlySet<string> = new Set(["cmd", "pwsh", "powershell"]);
 
 function executableName(token: string): string {
   const base = token.split(/[\\/]/).pop() ?? token;
-  return base.toLowerCase().replace(/\.exe$/, "");
+  return base.toLowerCase().replace(/\.(exe|cmd|bat)$/, "");
 }
 
-function evaluateSegment(role: AgentRole, tokens: string[], policy: GitPolicy, depth: number): PermissionOutcome {
-  const outcomes: PermissionOutcome[] = [];
+const isAssignment = (token: string) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 
-  // `bash -c "..."` and `eval ...` run their argument as a command.
-  const first = tokens[0];
-  if (first !== undefined) {
-    const exe = executableName(first);
-    if (exe === "eval") outcomes.push(evaluateBash(role, tokens.slice(1).join(" "), policy, depth + 1));
-    if (SHELLS.has(exe)) {
-      const c = tokens.findIndex((t) => t === "-c" || t === "/c" || t.toLowerCase() === "-command");
-      const script = c >= 0 ? tokens[c + 1] : undefined;
-      if (script !== undefined) outcomes.push(evaluateBash(role, script, policy, depth + 1));
+function isDeniedExecutable(exe: string, shell: ShellPolicy): boolean {
+  return shell.deniedExecutables.includes(exe) || exe.startsWith("mkfs.");
+}
+
+/**
+ * Index of the token that is the command a part runs: after `A=1` assignments and
+ * wrappers such as `xargs` or `env` (and their options). `tokens.length` when there is none.
+ */
+function commandIndex(tokens: string[], shell: ShellPolicy): number {
+  let p = 0;
+  while (p < tokens.length && isAssignment(tokens[p] ?? "")) p++;
+  while (p < tokens.length && shell.wrappers.includes(executableName(tokens[p] ?? ""))) {
+    p++;
+    while (p < tokens.length && ((tokens[p] ?? "").startsWith("-") || isAssignment(tokens[p] ?? ""))) p++;
+  }
+  return p;
+}
+
+/** `curl ... | sh`: a downloader whose output reaches a shell through pipes. */
+function pipedDownload(scan: ShellScan, shell: ShellPolicy): PermissionOutcome | null {
+  const names = scan.segments.map((tokens) => executableName(tokens[commandIndex(tokens, shell)] ?? ""));
+  for (let i = 0; i < names.length; i++) {
+    if (!shell.downloaders.includes(names[i] ?? "")) continue;
+    for (let j = i + 1; j < names.length && scan.pipedToNext[j - 1] === true; j++) {
+      if (shell.pipeShells.includes(names[j] ?? "")) return outcome("deny", `a download piped into ${names[j]} is blocked for every agent`);
     }
   }
+  return null;
+}
 
-  // git anywhere in the part counts (`sudo git ...`, `xargs git ...`, `A=1 git ...`).
+function evaluateSegment(role: AgentRole, tokens: string[], config: PermissionConfig, depth: number): PermissionOutcome {
+  const { shell } = config;
+  const outcomes: PermissionOutcome[] = [];
+
+  // Denied executables count before the command too (`sudo rm x`, `xargs sudo ...`).
+  const start = commandIndex(tokens, shell);
+  for (const token of tokens.slice(0, start + 1)) {
+    const exe = executableName(token);
+    if (isDeniedExecutable(exe, shell)) return outcome("deny", `${exe} is blocked for every agent`);
+  }
+  const wrapped = tokens.slice(0, start).some((t) => !isAssignment(t));
+  if (wrapped) outcomes.push(outcome("ask", "command run through another command"));
+
+  const first = tokens[start];
+  if (first === undefined) return strictest(outcome("ask", "shell command"), ...outcomes);
+  const exe = executableName(first);
+
+  // `bash -c "..."` and `eval ...` run their argument as a command.
+  if (exe === "eval") outcomes.push(evaluateBash(role, tokens.slice(start + 1).join(" "), config, depth + 1));
+  if (SHELLS.has(exe)) {
+    const c = tokens.findIndex((t, i) => i > start && (t === "-c" || t.toLowerCase() === "/c" || t.toLowerCase() === "-command"));
+    const script = c < 0 ? undefined : REST_OF_LINE_SHELLS.has(exe) ? tokens.slice(c + 1).join(" ") : tokens[c + 1];
+    if (script !== undefined) outcomes.push(evaluateBash(role, script, config, depth + 1));
+  }
+
+  // git anywhere in the part counts (`sudo git ...`, `echo x | xargs git ...`, `A=1 git ...`).
   const gitIndex = tokens.findIndex((t) => executableName(t) === "git");
-  if (gitIndex === -1) return strictest(outcome("ask", "shell command"), ...outcomes);
+  let main: Classified;
+  if (gitIndex !== -1) {
+    if (gitIndex !== start) outcomes.push(outcome("ask", "git run through another command"));
+    main = evaluateGit(role, tokens.slice(gitIndex + 1), config);
+  } else {
+    main = classifyCommand(exe, tokens.slice(start + 1), shell);
+  }
 
-  const before = tokens.slice(0, gitIndex).filter((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t));
-  if (before.length > 0) outcomes.push(outcome("ask", "git run through another command"));
-  outcomes.push(evaluateGit(role, tokens.slice(gitIndex + 1), policy));
-  return strictest(...outcomes);
+  if (role === "reviewer" && main.verdict === "allow" && (main.group === undefined || !shell.reviewerAllowedGroups.includes(main.group))) {
+    main = outcome("deny", reviewerReason());
+  }
+  return strictest(main, ...outcomes);
+}
+
+/** PowerShell's -Recurse and every prefix of it (-r, -rec, ...), optionally `-Recurse:$true`. */
+const POWERSHELL_RECURSE = /^-r(e(c(u(r(se?)?)?)?)?)?(:.*)?$/i;
+const DELETE_COMMANDS: ReadonlySet<string> = new Set(["rm", "rmdir", "rd", "del", "erase", "ri", "remove-item"]);
+/** Commands whose ask reason names their first argument too (`npm install`). */
+const SUBCOMMAND_TOOLS: ReadonlySet<string> = new Set(["npm", "npx", "pip", "pip3", "node", "python", "python3"]);
+
+function startsWithWords(words: string[], command: string): boolean {
+  return command.split(" ").every((word, i) => words[i] === word);
+}
+
+/** Every command except git. */
+function classifyCommand(exe: string, args: string[], shell: ShellPolicy): Classified {
+  if (DELETE_COMMANDS.has(exe)) {
+    const unixRecursive = exe === "rm" && args.some((a) => a === "--recursive" || /^-[A-Za-z]*[rR]/.test(a));
+    const windowsRecursive = args.some((a) => a.startsWith("/") && a.toLowerCase().split("/").includes("s"));
+    if (unixRecursive || windowsRecursive || args.some((a) => POWERSHELL_RECURSE.test(a))) {
+      return outcome("deny", "recursive deletes are blocked for every agent");
+    }
+    return outcome("ask", `${exe} deletes files`);
+  }
+
+  const words = [exe, ...args];
+  if (shell.lookAround.includes(exe)) return allowIn("lookAround", `${exe} only looks around`);
+  if (shell.search.includes(exe)) {
+    if (exe === "find" && args.some((a) => shell.findAskArgs.includes(a))) return outcome("ask", "find that runs commands, deletes or writes files");
+    return allowIn("search", `${exe} only searches`);
+  }
+  if (shell.versions.includes(words.join(" "))) return allowIn("versions", "version check");
+  const check = shell.checks.find((c) => startsWithWords(words, c));
+  if (check !== undefined) return allowIn("checks", `project check (${check})`);
+
+  const label = SUBCOMMAND_TOOLS.has(exe) && args[0] !== undefined ? `${exe} ${args[0]}` : exe;
+  return outcome("ask", `${label} is not on the allow list`);
 }
 
 /** git global options that take a separate value argument. */
@@ -151,11 +258,14 @@ const GLOBALS_WITH_VALUE: ReadonlySet<string> = new Set([
 ]);
 /** Global options that can run arbitrary programs or point git elsewhere. */
 const RISKY_GLOBALS: ReadonlySet<string> = new Set(["-c", "--config-env", "--exec-path", "--git-dir", "--work-tree"]);
-const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "diff", "log", "show"]);
+const READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "diff", "log", "show", "blame"]);
 /** Read-only subcommand options that write files or run external programs. */
 const READ_ONLY_WRITERS = ["--output", "--ext-diff", "--textconv"];
 
-function evaluateGit(role: AgentRole, args: string[], policy: GitPolicy): PermissionOutcome {
+function evaluateGit(role: AgentRole, args: string[], config: PermissionConfig): Classified {
+  const policy = config.git;
+  if (args.length === 1 && args[0] === "--version") return allowIn("versions", "version check");
+
   let i = 0;
   let riskyGlobal = false;
   while (i < args.length) {
@@ -184,11 +294,15 @@ function evaluateGit(role: AgentRole, args: string[], policy: GitPolicy): Permis
     if (!definition.canCommit) return outcome("deny", `only the Software Engineer may push, not the ${definition.roleLabel}`);
     return strictest(floor, policy.pushRequiresApproval ? outcome("ask", "pushes need approval") : outcome("allow", "push"));
   }
-  if (READ_ONLY_SUBCOMMANDS.has(sub)) {
+  const listsBranches = sub === "branch" && rest.every((a) => config.shell.gitBranchListArgs.includes(a));
+  if (READ_ONLY_SUBCOMMANDS.has(sub) || listsBranches) {
     const writes = rest.some((a) => READ_ONLY_WRITERS.some((w) => a === w || a.startsWith(`${w}=`)));
     if (writes) return outcome("ask", `git ${sub} with an option that writes files or runs programs`);
-    return strictest(floor, policy.readOnlyRequiresApproval ? outcome("ask", "read-only git needs approval") : outcome("allow", "read-only git"));
+    if (riskyGlobal) return floor;
+    if (policy.readOnlyRequiresApproval) return outcome("ask", "read-only git needs approval");
+    return allowIn("gitRead", "read-only git");
   }
+  if (sub === "branch") return outcome("ask", "git branch that creates or changes branches");
   return outcome("ask", `git ${sub}`);
 }
 
@@ -252,6 +366,8 @@ function normalizeArgs(sub: string, rest: string[], longOptions: string[]): Set<
 interface ShellScan {
   /** Each part's words with quotes removed. */
   segments: string[][];
+  /** pipedToNext[i]: part i's output goes into part i + 1 (`|`, not `||`). */
+  pipedToNext: boolean[];
   /** Bodies of $(...), `...`, <(...) and >(...), checked as commands of their own. */
   substitutions: string[];
   hasRedirect: boolean;
@@ -267,6 +383,7 @@ const SEPARATORS = new Set([";", "&", "|", "\n", "\r", "(", ")"]);
  */
 function scanShell(command: string): ShellScan {
   const segments: string[][] = [];
+  const pipedToNext: boolean[] = [];
   const substitutions: string[] = [];
   let hasRedirect = false;
   let unterminated = false;
@@ -278,9 +395,13 @@ function scanShell(command: string): ShellScan {
     if (token !== null) tokens.push(token);
     token = null;
   };
-  const endSegment = () => {
+  /** `separator` is what ended the part; an empty part keeps the previous part's separator. */
+  const endSegment = (separator = "") => {
     endToken();
-    if (tokens.length > 0) segments.push(tokens);
+    if (tokens.length > 0) {
+      segments.push(tokens);
+      pipedToNext.push(separator === "|");
+    }
     tokens = [];
   };
   const append = (text: string) => {
@@ -364,8 +485,9 @@ function scanShell(command: string): ShellScan {
       i++;
       while (command[i] === ">" || command[i] === "&") i++;
     } else if (SEPARATORS.has(ch)) {
-      endSegment();
-      i++;
+      const double = (ch === "|" || ch === "&") && next === ch;
+      endSegment(double ? ch + ch : ch);
+      i += double ? 2 : 1;
     } else if (/\s/.test(ch)) {
       endToken();
       i++;
@@ -377,5 +499,5 @@ function scanShell(command: string): ShellScan {
   if (quote !== null) unterminated = true;
   endSegment();
 
-  return { segments, substitutions, hasRedirect, unterminated };
+  return { segments, pipedToNext, substitutions, hasRedirect, unterminated };
 }

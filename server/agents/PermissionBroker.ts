@@ -2,9 +2,9 @@
 // my answer from a permission card (respondPermission). No timeout: a request
 // waits until I answer or the run is stopped.
 
-import { CONFIG, type AppConfig } from "../../src/shared/config.ts";
+import { CONFIG } from "../../src/shared/config.ts";
 import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
-import { explainPermission, type PermissionDecision, type PermissionRequest } from "../../src/shared/domain/permissions.ts";
+import { explainPermission, type PermissionConfig, type PermissionDecision, type PermissionRequest } from "../../src/shared/domain/permissions.ts";
 import { canonicalToolName, type ToolName } from "../../src/shared/domain/roles.ts";
 import type { PermissionRequestedPayload, PermissionResolvedPayload } from "../../src/shared/events/eventPayloads.ts";
 import { newId } from "../../src/shared/ids.ts";
@@ -25,7 +25,7 @@ export interface PermissionBrokerDeps {
   world: World;
   /** Lets the AgentManager own status changes (and their events). */
   setStatus(agentId: string, status: AgentStatus, activity: string): void;
-  config?: Pick<AppConfig, "git">;
+  config?: PermissionConfig;
 }
 
 export class PermissionBroker {

@@ -14,6 +14,38 @@ export interface GitPolicy {
   blockedPatterns: string[];
 }
 
+/** Groups of allowed shell commands; the reviewer may only use some of them. */
+export type ShellGroup = "lookAround" | "search" | "versions" | "gitRead" | "checks";
+
+/**
+ * Shell commands for roles with Bash. Allowed commands run without a card, denied ones
+ * never run, and every command not on a list asks (installs, other npm/npx/node/python,
+ * mkdir/cp/mv/touch, single file rm, git changes, push).
+ */
+export interface ShellPolicy {
+  /** Executables that only look around: allowed with any arguments. */
+  lookAround: string[];
+  /** Search executables: allowed, except find with one of findAskArgs. */
+  search: string[];
+  /** find arguments that run commands, delete or write files. */
+  findAskArgs: string[];
+  /** Whole commands, matched exactly. */
+  versions: string[];
+  /** `git branch` with only these arguments (or none) just lists branches. */
+  gitBranchListArgs: string[];
+  /** Project checks; extra arguments are fine. */
+  checks: string[];
+  /** Denied for every role, wherever they run (sudo, shutdown, ...). mkfs also covers mkfs.<type>. */
+  deniedExecutables: string[];
+  /** Run another command; the command after them is checked too. */
+  wrappers: string[];
+  /** A download piped into one of pipeShells is denied. */
+  downloaders: string[];
+  pipeShells: string[];
+  /** The only groups the reviewer may run; everything else is denied for him. */
+  reviewerAllowedGroups: ShellGroup[];
+}
+
 export interface AppConfig {
   serverHost: string;
   serverPort: number;
@@ -36,6 +68,7 @@ export interface AppConfig {
   minStatusDisplayMs: number;
   defaultModel: string;
   git: GitPolicy;
+  shell: ShellPolicy;
   /** Longest chat message or task description accepted from the client. */
   maxMessageChars: number;
   maxTaskTitleChars: number;
@@ -86,6 +119,8 @@ export interface AppConfig {
   claudeExecutablePath: string | null;
   /** Role prompt files (relative to this app's folder), read at the start of every run. */
   rolePromptsDir: string;
+  /** Team notes pasted into every role prompt; over this only the newest lines are kept. */
+  notesPromptMaxChars: number;
 }
 
 export type AgentRunnerKind = "claude" | "echo";
@@ -120,6 +155,19 @@ export const CONFIG: AppConfig = {
       "branch -D",
       "clean -f",
     ],
+  },
+  shell: {
+    lookAround: ["ls", "dir", "pwd", "cat", "type", "head", "tail", "wc", "tree", "which", "where", "echo"],
+    search: ["grep", "rg", "find"],
+    findAskArgs: ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf", "-fls"],
+    versions: ["node -v", "node --version", "npm -v", "npm --version", "git --version", "python --version", "python3 --version"],
+    gitBranchListArgs: ["-a", "-r", "--list", "-v", "-vv", "--all", "--remotes", "--show-current"],
+    checks: ["npm test", "npm run test", "npm run typecheck", "npm run lint", "npm run build", "tsc --noEmit", "npx tsc --noEmit"],
+    deniedExecutables: ["sudo", "su", "doas", "shutdown", "reboot", "format", "mkfs", "diskpart"],
+    wrappers: ["xargs", "env", "nohup", "time", "command", "exec", "nice", "timeout"],
+    downloaders: ["curl", "wget", "iwr", "irm", "invoke-webrequest", "invoke-restmethod"],
+    pipeShells: ["sh", "bash", "zsh", "pwsh", "powershell", "cmd", "iex", "invoke-expression"],
+    reviewerAllowedGroups: ["lookAround", "search", "versions", "gitRead"],
   },
   maxMessageChars: 20_000,
   maxTaskTitleChars: 200,
@@ -160,4 +208,5 @@ export const CONFIG: AppConfig = {
   recordingsDir: "data/recordings",
   claudeExecutablePath: null,
   rolePromptsDir: "server/roles",
+  notesPromptMaxChars: 8000,
 };

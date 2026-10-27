@@ -214,8 +214,8 @@ await check("ask path resolved by deny tells Claude the user denied it", async (
 await check("stop denies every pending request of that agent only", async () => {
   const { world, broker } = fakeWorld();
   const a = broker.decide(engineer, "Write", { file_path: "a" });
-  const b = broker.decide(engineer, "Bash", { command: "npm test" });
-  const other = broker.decide(makeAgentId(CONFIG.sandboxProjectId, "qa"), "Bash", { command: "npm test" });
+  const b = broker.decide(engineer, "Bash", { command: "npm install" });
+  const other = broker.decide(makeAgentId(CONFIG.sandboxProjectId, "qa"), "Bash", { command: "npm install" });
   await flush();
   assert.equal(world.pendingPermissions.length, 3);
   broker.denyAllFor(engineer);
