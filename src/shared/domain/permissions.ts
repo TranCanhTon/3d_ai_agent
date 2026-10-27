@@ -395,6 +395,8 @@ function scanShell(command: string): ShellScan {
     if (token !== null) tokens.push(token);
     token = null;
   };
+  /** The word being read (a function, so the closures' writes are seen). */
+  const currentToken = (): string | null => token;
   /** `separator` is what ended the part; an empty part keeps the previous part's separator. */
   const endSegment = (separator = "") => {
     endToken();
@@ -480,8 +482,17 @@ function scanShell(command: string): ShellScan {
       endToken();
       i = readSubstitution(i + 2, ")");
     } else if (ch === "<" || ch === ">") {
+      // A word of digits right before the operator is its file descriptor (`2>`), not an argument.
+      const fd = currentToken();
+      if (fd !== null && /^\d+$/.test(fd)) token = null;
+      else endToken();
+      // `2>&1`, `>&2`, `2>&-`: duplicating or closing a descriptor writes no file.
+      const duplicate = /^[<>]&(\d+-?|-)(?=$|[\s;|&()<>])/.exec(command.slice(i));
+      if (duplicate !== null) {
+        i += duplicate[0].length;
+        continue;
+      }
       hasRedirect = true;
-      endToken();
       i++;
       while (command[i] === ">" || command[i] === "&") i++;
     } else if (SEPARATORS.has(ch)) {
