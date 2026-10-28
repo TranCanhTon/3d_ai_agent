@@ -3,7 +3,7 @@
 
 import { CONFIG, type AgentRunnerKind } from "../../src/shared/config.ts";
 import type { AgentState } from "../../src/shared/domain/agentTypes.ts";
-import type { ChatMessage } from "../../src/shared/domain/chatTypes.ts";
+import type { Chat, ChatMessage } from "../../src/shared/domain/chatTypes.ts";
 import type { AgentInput } from "../../src/shared/domain/messageQueue.ts";
 import type { PermissionRequest } from "../../src/shared/domain/permissions.ts";
 import type { Project } from "../../src/shared/domain/projectTypes.ts";
@@ -13,7 +13,7 @@ import type { AgentEvent } from "../../src/shared/events/eventTypes.ts";
 import { makeAgentId, newId } from "../../src/shared/ids.ts";
 import { isModelId } from "../../src/shared/protocol/schemas.ts";
 import type { AuthState, CommLink, UsageState, WorldSnapshot } from "../../src/shared/protocol/protocol.ts";
-import type { DataStore, SavedAgent, SavedTask } from "../store/DataStore.ts";
+import type { DataStore, SavedAgent, SavedChat, SavedTask } from "../store/DataStore.ts";
 
 export type EventInput = Omit<AgentEvent, "id" | "timestamp" | "severity" | "feed"> &
   Partial<Pick<AgentEvent, "severity" | "feed">>;
@@ -25,7 +25,12 @@ export interface WorldHooks {
 }
 
 /** Agent fields that are saved; changing one of them rewrites the project's agents file. */
-const SAVED_AGENT_FIELDS = ["name", "claudeSessionId", "chatOnly", "model", "effort"] as const;
+const SAVED_AGENT_FIELDS = ["name", "activeChatId", "chatOnly", "model", "effort"] as const;
+
+/** My messages and the agent's replies count; tool lines and system lines do not. */
+function countsInChat(message: Pick<ChatMessage, "author">): boolean {
+  return message.author.kind === "user" || message.author.kind === "agent";
+}
 
 export const INTERRUPTED = "[interrupted]";
 
@@ -40,6 +45,8 @@ export class World {
   readonly runner: AgentRunnerKind;
 
   private readonly chat = new Map<string, ChatMessage[]>();
+  /** My chats by chat id (each agent has at least one). */
+  private readonly chats = new Map<string, Chat>();
   /** message id → agent id, for commands that only know the message. */
   private readonly messageAgents = new Map<string, string>();
   /** Inputs waiting in each agent's queue, as last reported by the AgentManager (saved). */
@@ -103,6 +110,8 @@ export class World {
       const saved = new Map((data.agents.get(project.id) ?? []).map((a) => [a.role, a]));
       for (const role of AGENT_ROLES) {
         const agent = this.newAgent(project.id, role, saved.get(role));
+        // Saved before chats existed: the one direct chat becomes the first chat.
+        if (saved.get(role)?.chats === undefined) dropped.add(project.id);
         this.agents.set(agent.id, agent);
         this.chat.set(agent.id, []);
         const queue = (saved.get(role)?.queue ?? []).filter((input) => input.taskId === null);
@@ -116,7 +125,10 @@ export class World {
       const list = this.chat.get(agentId);
       if (list === undefined) continue;
       const queuedIds = new Set((queues.get(agentId) ?? []).map((input) => input.id));
-      for (const loaded of messages) {
+      // Direct chat messages saved before chats existed belong to the agent's first chat.
+      const firstChatId = this.chatsOf(agentId).at(-1)?.id ?? null;
+      for (const stored of messages) {
+        const loaded: ChatMessage = { ...stored, chatId: stored.chatId ?? (stored.taskId === null ? firstChatId : null) };
         let message = loaded;
         const stillQueued = message.status === "queued" && queuedIds.has(message.id);
         if (message.status === "streaming" || message.status === "delivered" || (message.status === "queued" && !stillQueued)) {
@@ -125,6 +137,7 @@ export class World {
         }
         list.push(message);
         this.messageAgents.set(message.id, agentId);
+        if (message.chatId !== null) this.countMessage(message);
       }
     }
     for (const projectId of dropped) this.saveAgents(projectId);
@@ -180,13 +193,26 @@ export class World {
     return project;
   }
 
+  /** Registers the agent's saved chats (or a first one) and returns the active chat id. */
+  private loadChats(projectId: string, agentId: string, saved: SavedAgent | undefined): string {
+    const savedChats: SavedChat[] =
+      saved?.chats ?? [{ id: newId("chat"), title: "", claudeSessionId: saved?.claudeSessionId ?? null, createdAt: this.now(), contextTokens: null }];
+    for (const c of savedChats) {
+      this.chats.set(c.id, { ...c, projectId, agentId, updatedAt: c.createdAt, messageCount: 0 });
+    }
+    const active = saved?.activeChatId;
+    return active !== undefined && this.chats.get(active)?.agentId === agentId ? active : (savedChats.at(-1)?.id ?? "");
+  }
+
   private newAgent(projectId: string, role: AgentRole, saved: SavedAgent | undefined): AgentState {
     const def = ROLE_DEFINITIONS[role];
     const defaults = CONFIG.roleModelDefaults[role];
     // A saved model that is no longer offered falls back to the role default (effort with it).
     const savedModel = saved?.model !== undefined && isModelId(saved.model) ? saved.model : undefined;
+    const id = makeAgentId(projectId, role);
+    const activeChatId = this.loadChats(projectId, id, saved);
     return {
-      id: makeAgentId(projectId, role),
+      id,
       projectId,
       role,
       name: saved?.name ?? def.name,
@@ -194,7 +220,7 @@ export class World {
       activity: "",
       location: def.homeStation,
       currentTaskId: null,
-      claudeSessionId: saved?.claudeSessionId ?? null,
+      activeChatId,
       chatOnly: saved?.chatOnly ?? false,
       model: savedModel ?? defaults.model,
       effort: savedModel === undefined ? defaults.effort : (saved?.effort ?? null),
@@ -240,10 +266,62 @@ export class World {
     return list;
   }
 
-  addMessage(message: ChatMessage): void {
+  /** Returns the message's chat when the message changed it (count and time), else null. */
+  addMessage(message: ChatMessage): Chat | null {
     this.chatFor(message.agentId).push(message);
     this.messageAgents.set(message.id, message.agentId);
     this.store?.appendMessage(message);
+    return message.chatId === null ? null : this.countMessage(message);
+  }
+
+  private countMessage(message: ChatMessage): Chat | null {
+    const chat = message.chatId === null ? undefined : this.chats.get(message.chatId);
+    if (chat === undefined || !countsInChat(message)) return null;
+    const next: Chat = { ...chat, messageCount: chat.messageCount + 1, updatedAt: Math.max(chat.updatedAt, message.createdAt) };
+    this.chats.set(chat.id, next);
+    return next;
+  }
+
+  // ── Chats ──
+
+  getChat(chatId: string): Chat {
+    const chat = this.chats.get(chatId);
+    if (chat === undefined) throw new Error(`Unknown chat: ${chatId}`);
+    return chat;
+  }
+
+  /** The agent's chats, newest first (by last message, then by creation). */
+  chatsOf(agentId: string): Chat[] {
+    return [...this.chats.values()]
+      .filter((c) => c.agentId === agentId)
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  }
+
+  /** A new empty chat for the agent (saved). Does not make it active. */
+  addChat(agentId: string): Chat {
+    const agent = this.getAgent(agentId);
+    const now = this.now();
+    const chat: Chat = {
+      id: newId("chat"),
+      projectId: agent.projectId,
+      agentId,
+      title: "",
+      claudeSessionId: null,
+      createdAt: now,
+      updatedAt: now,
+      messageCount: 0,
+      contextTokens: null,
+    };
+    this.chats.set(chat.id, chat);
+    this.saveAgents(agent.projectId);
+    return chat;
+  }
+
+  updateChat(chatId: string, patch: Partial<Pick<Chat, "title" | "claudeSessionId" | "contextTokens">>): Chat {
+    const next: Chat = { ...this.getChat(chatId), ...patch };
+    this.chats.set(chatId, next);
+    this.saveAgents(next.projectId);
+    return next;
   }
 
   findMessage(agentId: string, messageId: string): ChatMessage | undefined {
@@ -320,7 +398,11 @@ export class World {
           id: a.id,
           role: a.role,
           name: a.name,
-          claudeSessionId: a.claudeSessionId,
+          chats: [...this.chats.values()]
+            .filter((c) => c.agentId === a.id)
+            .sort((x, y) => x.createdAt - y.createdAt)
+            .map(({ id, title, claudeSessionId, createdAt, contextTokens }) => ({ id, title, claudeSessionId, createdAt, contextTokens })),
+          activeChatId: a.activeChatId,
           chatOnly: a.chatOnly,
           model: a.model,
           effort: a.effort,

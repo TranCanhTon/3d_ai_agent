@@ -852,17 +852,20 @@ function ChatPanel({ agent }: { agent: AgentState }) {
           <button
             type="button"
             className={BUTTON}
-            disabled={agent.busy || !connected}
-            title={agent.busy ? "Stop the agent first" : "The next message starts a new Claude session"}
+            disabled={!connected}
+            title="Starts a new chat with its own Claude session (the team notes still apply)"
             onClick={() => {
-              if (!window.confirm(`Start a new session for ${agent.name}? It forgets this conversation (the team notes still apply).`)) return;
               setError(null);
               getBackend()
-                .resetAgentSession({ agentId: agent.id })
+                .newChat({ agentId: agent.id })
+                .then(() => {
+                  useWorldStore.getState().resetChats();
+                  selectAgent(agent.id);
+                })
                 .catch((e: unknown) => setError(errorText(e)));
             }}
           >
-            Reset session
+            New chat
           </button>
           <button
             type="button"

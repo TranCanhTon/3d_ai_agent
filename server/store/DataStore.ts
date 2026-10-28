@@ -1,7 +1,7 @@
 // JSON persistence under dataDir. Loaded once on start; written on every change.
 //
 //   projects.json                       Project[]
-//   agents/<projectId>.json             SavedAgent[] (session id, chat only flag, pending inputs)
+//   agents/<projectId>.json             SavedAgent[] (chats with their session ids, settings, pending inputs)
 //   chats/<agentId with : → _>.jsonl    one ChatMessage per line; a later line for the same id
 //                                       replaces it; { deletedId } removes it (a cancelled queued message)
 //   tasks/<projectId>.json              SavedTask[] (each task plus the pipeline's step state)
@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { EFFORT_LEVELS, type EffortLevel } from "../../src/shared/domain/agentTypes.ts";
-import type { ChatAuthor, ChatMessage } from "../../src/shared/domain/chatTypes.ts";
+import type { Chat, ChatAuthor, ChatMessage } from "../../src/shared/domain/chatTypes.ts";
 import type { AgentInput } from "../../src/shared/domain/messageQueue.ts";
 import type { Project } from "../../src/shared/domain/projectTypes.ts";
 import { PIPELINE_STEPS, type PipelineStep } from "../../src/shared/domain/handoff.ts";
@@ -20,11 +20,21 @@ import { chatAuthorSchema, chatMessageSchema, projectSchema, taskSchema } from "
 import type { Logger } from "../log.ts";
 import { appendLine, readJson, writeJsonAtomic } from "./files.ts";
 
+/** A chat as saved; its message count and last message time are rebuilt from the messages. */
+export type SavedChat = Pick<Chat, "id" | "title" | "claudeSessionId" | "createdAt" | "contextTokens">;
+
+/** A message as saved: files written before chats existed have no chatId. */
+export type StoredChatMessage = Omit<ChatMessage, "chatId"> & { chatId?: string | null };
+
 export interface SavedAgent {
   id: string;
   role: AgentRole;
   name: string;
-  claudeSessionId: string | null;
+  /** Oldest first. Missing in files saved before chats existed. */
+  chats?: SavedChat[];
+  activeChatId?: string;
+  /** Before chats existed: the one direct chat session (becomes the first chat). */
+  claudeSessionId?: string | null;
   chatOnly: boolean;
   /** Missing in files saved before agents had their own model: the role default. */
   model?: string;
@@ -65,7 +75,7 @@ export interface LoadedData {
   /** By project id. */
   agents: Map<string, SavedAgent[]>;
   /** By agent id, oldest first, latest line per message. */
-  chats: Map<string, ChatMessage[]>;
+  chats: Map<string, StoredChatMessage[]>;
   /** By project id. */
   tasks: Map<string, SavedTask[]>;
 }
@@ -83,7 +93,19 @@ const savedAgentSchema = z.object({
   id: z.string(),
   role: z.enum(AGENT_ROLES),
   name: z.string(),
-  claudeSessionId: z.string().nullable(),
+  chats: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        claudeSessionId: z.string().nullable(),
+        createdAt: z.number(),
+        contextTokens: z.number().nullable(),
+      }),
+    )
+    .optional(),
+  activeChatId: z.string().optional(),
+  claudeSessionId: z.string().nullable().optional(),
   chatOnly: z.boolean().default(false),
   model: z.string().optional(),
   effort: z.enum(EFFORT_LEVELS).nullable().optional(),
@@ -91,6 +113,8 @@ const savedAgentSchema = z.object({
 });
 
 const deletionSchema = z.object({ deletedId: z.string() });
+
+const storedMessageSchema = chatMessageSchema.extend({ chatId: z.string().nullable().optional() });
 
 const savedTaskSchema = z.object({
   task: taskSchema,
@@ -149,7 +173,7 @@ export class DataStore {
       agents.set(project.id, z.array(savedAgentSchema).parse(raw));
     }
 
-    const chats = new Map<string, ChatMessage[]>();
+    const chats = new Map<string, StoredChatMessage[]>();
     const chatDir = join(this.dataDir, "chats");
     if (existsSync(chatDir)) {
       for (const file of readdirSync(chatDir)) {
@@ -168,8 +192,8 @@ export class DataStore {
   }
 
   /** Latest line per message id wins; order is by first appearance. Bad lines are skipped. */
-  private readChat(path: string): ChatMessage[] {
-    const byId = new Map<string, ChatMessage>();
+  private readChat(path: string): StoredChatMessage[] {
+    const byId = new Map<string, StoredChatMessage>();
     const lines = readFileSync(path, "utf8").split("\n");
     lines.forEach((line, index) => {
       if (line.trim() === "") return;
@@ -185,7 +209,7 @@ export class DataStore {
         byId.delete(deletion.data.deletedId);
         return;
       }
-      const message = chatMessageSchema.safeParse(value);
+      const message = storedMessageSchema.safeParse(value);
       if (message.success) byId.set(message.data.id, message.data);
       else this.log(`skipping invalid line ${index + 1} of ${path}`);
     });

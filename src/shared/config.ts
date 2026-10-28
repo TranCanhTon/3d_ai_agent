@@ -92,6 +92,10 @@ export interface AppConfig {
   maxMessageChars: number;
   maxTaskTitleChars: number;
   chatHistoryDefaultLimit: number;
+  /** A chat's title is my first message, cut to this. */
+  chatTitleMaxChars: number;
+  /** Above this many context tokens the UI suggests starting a new chat. */
+  longChatTokens: number;
   chatHistoryMaxLimit: number;
   /** How long a communication arc stays visible. */
   commLinkDurationMs: number;
@@ -204,6 +208,8 @@ export const CONFIG: AppConfig = {
   maxMessageChars: 20_000,
   maxTaskTitleChars: 200,
   chatHistoryDefaultLimit: 50,
+  chatTitleMaxChars: 60,
+  longChatTokens: 80_000,
   chatHistoryMaxLimit: 200,
   commLinkDurationMs: 2400,
   phaseProgress: {

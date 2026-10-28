@@ -29,7 +29,7 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
       ctx.projects.restoreProject(command.args.projectId);
       return null;
     case "sendMessage":
-      return ctx.agents.sendMessage(command.args.agentId, command.args.text);
+      return ctx.agents.sendMessage(command.args.agentId, command.args.text, command.args.chatId);
     case "stopAgent":
       ctx.world.getAgent(command.args.agentId);
       ctx.agents.stopAgent(command.args.agentId);
@@ -37,9 +37,13 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
     case "cancelQueued":
       ctx.agents.cancelQueued(command.args.agentId, command.args.messageId);
       return null;
-    case "resetAgentSession":
-      ctx.agents.resetSession(command.args.agentId);
+    case "newChat":
+      return ctx.agents.newChat(command.args.agentId);
+    case "openChat":
+      ctx.agents.openChat(command.args.agentId, command.args.chatId);
       return null;
+    case "listChats":
+      return ctx.agents.listChats(command.args.agentId);
     case "setChatOnly":
       ctx.agents.setChatOnly(command.args.agentId, command.args.chatOnly);
       return null;
@@ -47,7 +51,7 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
       ctx.agents.setAgentModel(command.args.agentId, command.args.model, command.args.effort);
       return null;
     case "getChatHistory":
-      return ctx.agents.getChatHistory(command.args.agentId, command.args.before, command.args.limit, command.args.view);
+      return ctx.agents.getChatHistory(command.args.agentId, command.args.before, command.args.limit, command.args.view, command.args.chatId);
     case "submitTask":
       return ctx.pipeline.submit(command.args);
     case "cancelTask":

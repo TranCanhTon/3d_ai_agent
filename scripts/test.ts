@@ -727,9 +727,12 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "archiveProject", args: { projectId: "proj_1" } },
   { name: "restoreProject", args: { projectId: "proj_1" } },
   { name: "sendMessage", args: { agentId: "proj_1:engineer", text: "Fix the build" } },
+  { name: "sendMessage", args: { agentId: "proj_1:engineer", text: "And the tests", chatId: "chat_2" } },
   { name: "cancelQueued", args: { agentId: "proj_1:engineer", messageId: "msg_1" } },
   { name: "stopAgent", args: { agentId: "proj_1:engineer" } },
-  { name: "resetAgentSession", args: { agentId: "proj_1:qa" } },
+  { name: "newChat", args: { agentId: "proj_1:qa" } },
+  { name: "openChat", args: { agentId: "proj_1:qa", chatId: "chat_1" } },
+  { name: "listChats", args: { agentId: "proj_1:qa" } },
   { name: "setChatOnly", args: { agentId: "proj_1:qa", chatOnly: true } },
   { name: "setAgentModel", args: { agentId: "proj_1:researcher", model: "sonnet", effort: "medium" } },
   { name: "setAgentModel", args: { agentId: "proj_1:engineer", model: "opus", effort: null } },
@@ -742,12 +745,13 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "getNotes", args: { projectId: "proj_1" } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", before: "msg_9", limit: 50 } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", view: "tasks" } },
+  { name: "getChatHistory", args: { agentId: "proj_1:qa", chatId: "chat_1", limit: 20 } },
   { name: "getSnapshot", args: {} },
 ];
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 19);
+  assert.equal(names.size, 21);
 });
 
 for (const command of EXAMPLE_COMMANDS) {
@@ -833,7 +837,7 @@ const snapshot: WorldSnapshot = {
     activity: "",
     location: ROLE_DEFINITIONS[role].homeStation,
     currentTaskId: null,
-    claudeSessionId: null,
+    activeChatId: `chat_${role}`,
     chatOnly: false,
     model: CONFIG.roleModelDefaults[role].model,
     effort: CONFIG.roleModelDefaults[role].effort,

@@ -257,8 +257,14 @@ export class WebSocketAgentBackend implements AgentBackend {
   stopAgent(args: CommandArgsMap["stopAgent"]) {
     return this.run("stopAgent", args);
   }
-  resetAgentSession(args: CommandArgsMap["resetAgentSession"]) {
-    return this.run("resetAgentSession", args);
+  newChat(args: CommandArgsMap["newChat"]) {
+    return this.run("newChat", args);
+  }
+  openChat(args: CommandArgsMap["openChat"]) {
+    return this.run("openChat", args);
+  }
+  listChats(args: CommandArgsMap["listChats"]) {
+    return this.run("listChats", args);
   }
   setChatOnly(args: CommandArgsMap["setChatOnly"]) {
     return this.run("setChatOnly", args);

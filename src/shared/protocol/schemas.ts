@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { CONFIG } from "../config.ts";
 import { AGENT_STATUSES, EFFORT_LEVELS, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
-import { CHAT_MESSAGE_STATUSES, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
+import { CHAT_MESSAGE_STATUSES, type Chat, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import { AGENT_ROLES } from "../domain/roles.ts";
@@ -53,7 +53,7 @@ export const agentStateSchema = z.object({
   activity: z.string(),
   location: z.enum(STATION_IDS),
   currentTaskId: z.string().nullable(),
-  claudeSessionId: z.string().nullable(),
+  activeChatId: id,
   chatOnly: z.boolean(),
   model: z.string(),
   effort: z.enum(EFFORT_LEVELS).nullable(),
@@ -111,10 +111,23 @@ export const chatMessageSchema = z.object({
   author: chatAuthorSchema,
   text: z.string(),
   taskId: z.string().nullable(),
+  chatId: z.string().nullable(),
   pinned: z.boolean(),
   status: z.enum(CHAT_MESSAGE_STATUSES),
   createdAt: epochMs,
   usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() }).optional(),
+});
+
+export const chatSchema = z.object({
+  id,
+  projectId: id,
+  agentId: id,
+  title: z.string(),
+  claudeSessionId: z.string().nullable(),
+  createdAt: epochMs,
+  updatedAt: epochMs,
+  messageCount: z.number().int().nonnegative(),
+  contextTokens: z.number().int().nonnegative().nullable(),
 });
 
 export const permissionRequestSchema = z.object({
@@ -184,10 +197,12 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
   }),
   command("archiveProject", { projectId: id }),
   command("restoreProject", { projectId: id }),
-  command("sendMessage", { agentId: id, text }),
+  command("sendMessage", { agentId: id, text, chatId: id.optional() }),
   command("cancelQueued", { agentId: id, messageId: id }),
   command("stopAgent", { agentId: id }),
-  command("resetAgentSession", { agentId: id }),
+  command("newChat", { agentId: id }),
+  command("openChat", { agentId: id, chatId: id }),
+  command("listChats", { agentId: id }),
   command("setChatOnly", { agentId: id, chatOnly: z.boolean() }),
   command("setAgentModel", {
     agentId: id,
@@ -211,6 +226,7 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
     before: id.optional(),
     limit: z.number().int().min(1).max(CONFIG.chatHistoryMaxLimit).optional(),
     view: z.enum(CHAT_VIEWS).optional(),
+    chatId: id.optional(),
   }),
   command("getSnapshot", {}),
 ]);
@@ -257,7 +273,9 @@ export const commandResultSchemas = {
   sendMessage: chatMessageSchema,
   cancelQueued: z.null(),
   stopAgent: z.null(),
-  resetAgentSession: z.null(),
+  newChat: chatSchema,
+  openChat: z.null(),
+  listChats: z.array(chatSchema),
   setChatOnly: z.null(),
   setAgentModel: z.null(),
   submitTask: taskSchema,
@@ -322,6 +340,7 @@ export type SchemaTypeChecks = [
   Expect<Equals<z.infer<typeof taskSchema>, Task>>,
   Expect<Equals<z.infer<typeof chatAuthorSchema>, ChatAuthor>>,
   Expect<Equals<z.infer<typeof chatMessageSchema>, ChatMessage>>,
+  Expect<Equals<z.infer<typeof chatSchema>, Chat>>,
   Expect<Equals<z.infer<typeof permissionRequestSchema>, PermissionRequest>>,
   Expect<Equals<z.infer<typeof agentEventSchema>, AgentEvent>>,
   Expect<Equals<z.infer<typeof commLinkSchema>, CommLink>>,

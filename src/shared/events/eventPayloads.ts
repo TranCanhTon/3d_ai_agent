@@ -3,12 +3,14 @@
 
 import { z } from "zod";
 import { AGENT_STATUSES } from "../domain/agentTypes.ts";
-import { chatMessageSchema, permissionRequestSchema, taskSchema } from "../protocol/schemas.ts";
+import { chatMessageSchema, chatSchema, permissionRequestSchema, taskSchema } from "../protocol/schemas.ts";
 import type { AgentEvent, AgentEventType } from "./eventTypes.ts";
 
 export const eventPayloadSchemas = {
   /** chat.message_created and chat.message_completed carry the whole message. */
   chatMessage: z.object({ message: chatMessageSchema }),
+  /** chat.started (a new chat) and chat.updated (title, count, context size, session): the chat after the change. */
+  chat: z.object({ chat: chatSchema }),
   /** chat.message_delta: text to append to a streaming message. */
   chatDelta: z.object({ messageId: z.string(), delta: z.string() }),
   /** agent.status_changed */
@@ -34,6 +36,7 @@ export const eventPayloadSchemas = {
 };
 
 export type ChatMessagePayload = z.infer<typeof eventPayloadSchemas.chatMessage>;
+export type ChatPayload = z.infer<typeof eventPayloadSchemas.chat>;
 export type ChatDeltaPayload = z.infer<typeof eventPayloadSchemas.chatDelta>;
 export type AgentStatusPayload = z.infer<typeof eventPayloadSchemas.agentStatus>;
 export type QueueChangedPayload = z.infer<typeof eventPayloadSchemas.queueChanged>;

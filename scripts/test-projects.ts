@@ -13,7 +13,7 @@ import { cleanNoteText, ensureGitignoreEntry, NOTES_HEADER } from "../server/pro
 import { startServer, type RunningServer } from "../server/startServer.ts";
 import { CONFIG } from "../src/shared/config.ts";
 import type { AgentState } from "../src/shared/domain/agentTypes.ts";
-import type { ChatMessage } from "../src/shared/domain/chatTypes.ts";
+import type { Chat, ChatMessage } from "../src/shared/domain/chatTypes.ts";
 import type { Project } from "../src/shared/domain/projectTypes.ts";
 import { AGENT_ROLES } from "../src/shared/domain/roles.ts";
 import { eventPayloadSchemas, readPayload } from "../src/shared/events/eventPayloads.ts";
@@ -174,6 +174,7 @@ class ScriptedRunner implements AgentRunner {
         return;
       }
       callbacks.onDelta(`ok: ${input.text}`);
+      callbacks.onUsage({ inputTokens: 1000 + input.text.length, outputTokens: 10 });
       later(5, () => callbacks.onComplete(`ok: ${input.text}`));
     });
   }
@@ -261,6 +262,15 @@ class Client {
     return this.waitFor((m) => (m.type === "event" && match(m.event) ? m.event : undefined), label);
   }
 
+  /** Waits for the agent's first streamed text after `messageId` (my message) was created. */
+  async waitStreaming(agentId: string, messageId: string): Promise<void> {
+    const sent = this.messages.findIndex((m) => m.type === "ack" && m.ok && (m.result as { id?: string } | undefined)?.id === messageId);
+    await this.waitFor(
+      (m) => (m.type === "event" && m.event.type === "chat.message_delta" && m.event.agentId === agentId && this.messages.indexOf(m) > sent ? m : undefined),
+      `${agentId} streaming`,
+    );
+  }
+
   async command(name: string, args: Record<string, unknown>): Promise<AckMessage> {
     const id = `c${this.nextId++}`;
     this.ws.send(JSON.stringify({ type: "command", id, command: { name, args } }));
@@ -289,8 +299,18 @@ class Client {
     return agent;
   }
 
-  async history(agentId: string): Promise<ChatMessage[]> {
-    return (await this.ok<{ messages: ChatMessage[] }>("getChatHistory", { agentId })).messages;
+  async history(agentId: string, chatId?: string): Promise<ChatMessage[]> {
+    return (await this.ok<{ messages: ChatMessage[] }>("getChatHistory", { agentId, ...(chatId === undefined ? {} : { chatId }) })).messages;
+  }
+
+  chats(agentId: string): Promise<Chat[]> {
+    return this.ok<Chat[]>("listChats", { agentId });
+  }
+
+  /** The Claude session of the agent's active chat. */
+  async session(agentId: string): Promise<string | null> {
+    const agent = await this.agent(agentId);
+    return (await this.chats(agentId)).find((c) => c.id === agent.activeChatId)?.claudeSessionId ?? null;
   }
 
   /** Waits until the agent's reply to `text` is complete and the agent is idle again. */
@@ -354,7 +374,10 @@ await check("createProject without git init: notes, .gitignore line once, 6 idle
     agents.map((a) => a.role),
     [...AGENT_ROLES],
   );
-  assert.ok(agents.every((a) => a.status === "idle" && !a.chatOnly && a.claudeSessionId === null));
+  assert.ok(agents.every((a) => a.status === "idle" && !a.chatOnly && a.activeChatId !== ""));
+  const chats = await client.chats(makeAgentId(shop?.id ?? "", "qa"));
+  assert.equal(chats.length, 1, "every agent starts with one empty chat");
+  assert.deepEqual([chats[0]?.title, chats[0]?.messageCount, chats[0]?.claudeSessionId], ["", 0, null]);
   await client.waitForEvent((e) => e.type === "project.created" && e.projectId === shop?.id, "project.created");
 });
 
@@ -416,21 +439,65 @@ await check("pinToNotes: my edited text is appended and the message is marked pi
   assert.match(await client.error("pinToNotes", { messageId: "msg_nope", text: "x" }), /Unknown message/);
 });
 
-await check("resetAgentSession: refused while busy; then clears the session and adds a system line", async () => {
+let firstResearcherChat = "";
+
+await check("chats: my first message is the title; the reply counts and sets the session and context size", async () => {
   const researcher = shopAgent("researcher");
-  await client.ok("sendMessage", { agentId: researcher, text: "hold on" });
-  await client.waitForEvent((e) => e.type === "chat.message_delta" && e.agentId === researcher, "researcher streaming");
-  assert.match(await client.error("resetAgentSession", { agentId: researcher }), /busy/);
+  await client.ok("sendMessage", { agentId: researcher, text: "  What   does the cart do?\nAnd the checkout?" });
+  await client.waitReplied(researcher, "ok:   What   does the cart do?\nAnd the checkout?");
+  const [chat] = await client.chats(researcher);
+  assert.ok(chat !== undefined);
+  firstResearcherChat = chat.id;
+  assert.equal(chat.title, "What does the cart do? And the checkout?");
+  assert.equal(chat.messageCount, 2);
+  assert.notEqual(chat.claudeSessionId, null);
+  assert.equal(chat.contextTokens, 1000 + "  What   does the cart do?\nAnd the checkout?".length);
+  assert.ok((await client.history(researcher)).every((m) => m.chatId === chat.id));
+});
+
+await check("newChat: a fresh session, its own history; an empty active chat is reused", async () => {
+  const researcher = shopAgent("researcher");
+  const second = await client.ok<Chat>("newChat", { agentId: researcher });
+  assert.notEqual(second.id, firstResearcherChat);
+  assert.equal((await client.agent(researcher)).activeChatId, second.id);
+  const started = await client.waitForEvent((e) => e.type === "chat.started" && e.agentId === researcher, "chat.started");
+  assert.equal(started.feed, true);
+  assert.equal((await client.ok<Chat>("newChat", { agentId: researcher })).id, second.id, "still empty: no second empty chat");
+  await client.ok("sendMessage", { agentId: researcher, text: "fresh topic" });
+  await client.waitReplied(researcher, "ok: fresh topic");
+  assert.equal(runs.at(-1)?.sessionId, null, "a new chat starts a new Claude session");
+  assert.deepEqual((await client.history(researcher)).map((m) => m.text), ["fresh topic", "ok: fresh topic"]);
+  assert.equal((await client.history(researcher, firstResearcherChat)).length, 2, "the first chat keeps its messages");
+  assert.deepEqual((await client.chats(researcher)).map((c) => c.id), [second.id, firstResearcherChat], "newest first");
+});
+
+await check("openChat: an earlier chat resumes its own session; sendMessage to a chat makes it active", async () => {
+  const researcher = shopAgent("researcher");
+  const first = (await client.chats(researcher)).find((c) => c.id === firstResearcherChat);
+  await client.ok("openChat", { agentId: researcher, chatId: firstResearcherChat });
+  assert.equal((await client.agent(researcher)).activeChatId, firstResearcherChat);
+  await client.ok("sendMessage", { agentId: researcher, text: "back to the cart" });
+  await client.waitReplied(researcher, "ok: back to the cart");
+  assert.equal(runs.at(-1)?.sessionId, first?.claudeSessionId);
+  const [newest, older] = await client.chats(researcher);
+  assert.equal(newest?.id, firstResearcherChat, "the chat with the latest message comes first");
+  await client.ok("sendMessage", { agentId: researcher, text: "and this one", chatId: older?.id });
+  await client.waitReplied(researcher, "ok: and this one");
+  assert.equal((await client.agent(researcher)).activeChatId, older?.id);
+  assert.match(await client.error("openChat", { agentId: shopAgent("qa"), chatId: firstResearcherChat }), /is not/);
+  assert.match(await client.error("openChat", { agentId: researcher, chatId: "chat_nope" }), /Unknown chat/);
+});
+
+await check("newChat while busy: the running reply stays in its own chat", async () => {
+  const researcher = shopAgent("researcher");
+  const before = (await client.agent(researcher)).activeChatId;
+  const held = await client.ok<ChatMessage>("sendMessage", { agentId: researcher, text: "hold on" });
+  await client.waitStreaming(researcher, held.id);
+  const next = await client.ok<Chat>("newChat", { agentId: researcher });
   await client.ok("stopAgent", { agentId: researcher });
   await client.waitIdle(researcher);
-  assert.notEqual((await client.agent(researcher)).claudeSessionId, null);
-  await client.ok("resetAgentSession", { agentId: researcher });
-  assert.equal((await client.agent(researcher)).claudeSessionId, null);
-  assert.equal((await client.history(researcher)).at(-1)?.text, "New session started");
-  await client.waitForEvent((e) => e.type === "agent.session_reset" && e.agentId === researcher, "agent.session_reset");
-  await client.ok("sendMessage", { agentId: researcher, text: "fresh" });
-  await client.waitReplied(researcher, "ok: fresh");
-  assert.equal(runs.at(-1)?.sessionId, null, "the next run starts a new session");
+  assert.equal((await client.history(researcher, next.id)).length, 0);
+  assert.ok((await client.history(researcher, before)).some((m) => m.text === "partial [stopped]"));
 });
 
 await check("setChatOnly is saved on the agent and passed to the next run", async () => {
@@ -462,8 +529,8 @@ await check("setAgentModel: role defaults, saved on the agent, passed to the nex
 
 await check("setAgentModel while busy: the running input keeps its model, the next one gets the new one", async () => {
   const qa = shopAgent("qa");
-  await client.ok("sendMessage", { agentId: qa, text: "hold the line" });
-  await client.waitForEvent((e) => e.type === "chat.message_delta" && e.agentId === qa, "qa streaming");
+  const held = await client.ok<ChatMessage>("sendMessage", { agentId: qa, text: "hold the line" });
+  await client.waitStreaming(qa, held.id);
   assert.deepEqual([runs.at(-1)?.model, runs.at(-1)?.effort], ["sonnet", "medium"]);
   await client.ok("setAgentModel", { agentId: qa, model: "opus", effort: "max" });
   await client.ok("stopAgent", { agentId: qa });
@@ -495,16 +562,20 @@ const reviewer = () => shopAgent("reviewer");
 let interruptedId = "";
 let queuedIds: string[] = [];
 const sessionsBefore = new Map<string, string | null>();
+const chatsBefore = new Map<string, Chat[]>();
 
 await check("before restart: a streaming reply with two queued messages", async () => {
   const first = await client.ok<ChatMessage>("sendMessage", { agentId: reviewer(), text: "hold this" });
   interruptedId = first.id;
-  await client.waitForEvent((e) => e.type === "chat.message_delta" && e.agentId === reviewer(), "reviewer streaming");
+  await client.waitStreaming(reviewer(), first.id);
   const a = await client.ok<ChatMessage>("sendMessage", { agentId: reviewer(), text: "queued one" });
   const b = await client.ok<ChatMessage>("sendMessage", { agentId: reviewer(), text: "queued two" });
   queuedIds = [a.id, b.id];
   assert.equal((await client.agent(reviewer())).queuedCount, 2);
-  for (const agent of (await client.snapshot()).agents) sessionsBefore.set(agent.id, agent.claudeSessionId);
+  for (const agent of (await client.snapshot()).agents) {
+    sessionsBefore.set(agent.id, await client.session(agent.id));
+    chatsBefore.set(agent.id, await client.chats(agent.id));
+  }
 });
 
 client.close();
@@ -520,11 +591,18 @@ const freshFile = () => {
 {
   const { path } = freshFile();
   const saved = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[];
+  // ...and from before chats: one session on the agent, messages without a chatId.
   for (const agent of saved) {
     delete agent.model;
     delete agent.effort;
+    delete agent.chats;
+    delete agent.activeChatId;
+    agent.claudeSessionId = agent.role === "orchestrator" ? "sess_legacy" : null;
   }
   writeFileSync(path, JSON.stringify(saved), "utf8");
+  const chatFile = join(dataDir, "chats", `${makeAgentId(freshFile().id, "orchestrator").replace(":", "_")}.jsonl`);
+  const lines = readFileSync(chatFile, "utf8").split("\n").filter((l) => l.trim() !== "");
+  writeFileSync(chatFile, lines.map((l) => JSON.stringify({ ...(JSON.parse(l) as object), chatId: undefined })).join("\n") + "\n", "utf8");
 }
 ({ server, client } = await boot());
 
@@ -536,8 +614,11 @@ await check("after restart: projects, agents, session ids and chat only are back
   );
   assert.equal(snapshot.agents.length, 18);
   for (const agent of snapshot.agents) {
-    if (agent.id === reviewer()) continue;
-    assert.equal(agent.claudeSessionId, sessionsBefore.get(agent.id), agent.id);
+    if (agent.id === reviewer() || agent.projectId === freshFile().id) continue;
+    assert.equal(await client.session(agent.id), sessionsBefore.get(agent.id), agent.id);
+    const chats = (await client.chats(agent.id)).map(({ id, title, claudeSessionId, messageCount, contextTokens }) => ({ id, title, claudeSessionId, messageCount, contextTokens }));
+    const before = (chatsBefore.get(agent.id) ?? []).map(({ id, title, claudeSessionId, messageCount, contextTokens }) => ({ id, title, claudeSessionId, messageCount, contextTokens }));
+    assert.deepEqual(chats, before, `${agent.id} chats are back`);
   }
   assert.equal((await client.agent(shopAgent("product_manager"))).chatOnly, true);
   const engineerAfter = await client.agent(shopAgent("engineer"));
@@ -548,7 +629,13 @@ await check("after restart: projects, agents, session ids and chat only are back
     const agent = await client.agent(makeAgentId(freshFile().id, role));
     assert.deepEqual([agent.model, agent.effort], [CONFIG.roleModelDefaults[role].model, CONFIG.roleModelDefaults[role].effort], `old saved ${role} gets the role default`);
   }
-  assert.equal((await client.agent(shopAgent("engineer"))).claudeSessionId !== null, true);
+  assert.equal((await client.session(shopAgent("engineer"))) !== null, true);
+  const legacy = makeAgentId(freshFile().id, "orchestrator");
+  const legacyChats = await client.chats(legacy);
+  assert.equal(legacyChats.length, 1, "an agent saved before chats gets one chat");
+  assert.equal(legacyChats[0]?.claudeSessionId, "sess_legacy", "with its old session");
+  assert.equal(legacyChats[0]?.messageCount, 2);
+  assert.deepEqual((await client.history(legacy)).map((m) => m.text), ["back", "ok: back"], "old messages are in that chat");
 });
 
 await check("after restart: the cut-off reply is [interrupted] and the queued messages run in order", async () => {

@@ -56,7 +56,8 @@ export interface AgentState {
   activity: string;
   location: StationId;
   currentTaskId: string | null;
-  claudeSessionId: string | null;
+  /** The chat my messages go to (each chat has its own Claude session). */
+  activeChatId: string;
   /** No tools at all: the agent only answers from what it knows and the conversation. */
   chatOnly: boolean;
   /** Claude model alias for this agent's next runs (one of config.models). */

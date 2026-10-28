@@ -6,7 +6,7 @@
 import { CONFIG } from "../../src/shared/config.ts";
 import type { AgentStatus, EffortLevel } from "../../src/shared/domain/agentTypes.ts";
 import { ROLE_DEFINITIONS } from "../../src/shared/domain/roles.ts";
-import type { ChatAuthor, ChatMessage, TokenUsage } from "../../src/shared/domain/chatTypes.ts";
+import type { Chat, ChatAuthor, ChatMessage, TokenUsage } from "../../src/shared/domain/chatTypes.ts";
 import {
   cancelQueued,
   EMPTY_QUEUE,
@@ -20,6 +20,7 @@ import {
 import type {
   AgentStatusPayload,
   ChatDeltaPayload,
+  ChatPayload,
   ChatMessagePayload,
   QueueChangedPayload,
   ToolPayload,
@@ -35,6 +36,8 @@ interface AgentSlot {
   runner: AgentRunner;
   /** Bumped whenever a run ends or is stopped; callbacks from older runs are ignored. */
   runId: number;
+  /** The chat of the running chat input (null for task inputs): its replies and tool lines go there. */
+  chatId: string | null;
   /** The agent text message currently receiving deltas. */
   streamingMessageId: string | null;
   /** The latest agent text message of the current run (gets the token usage). */
@@ -79,7 +82,11 @@ export interface AgentManagerOptions {
 /** Writes an agent's note (the add_note tool) and returns the line written. Throws on bad input. */
 export type NoteWriter = (agentId: string, text: string) => string;
 
-export const SESSION_RESET_TEXT = "New session started";
+/** A chat's title: my first message on one line, cut to chatTitleMaxChars. */
+export function chatTitle(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > CONFIG.chatTitleMaxChars ? `${line.slice(0, CONFIG.chatTitleMaxChars - 1).trimEnd()}…` : line;
+}
 
 /** "opus · high", or "opus · default" without an effort. */
 export function modelLabel(model: string, effort: EffortLevel | null): string {
@@ -135,14 +142,48 @@ export class AgentManager {
     }
   }
 
-  /** Forgets the Claude session; the next input starts a new one. Refused while the agent is busy. */
-  resetSession(agentId: string): void {
+  /**
+   * Starts a new chat (its own Claude session) and makes it active. The active chat is
+   * returned as it is when it is still empty. A running or queued input keeps its chat.
+   */
+  newChat(agentId: string): Chat {
     const agent = this.world.getAgent(agentId);
-    if (isBusy(this.slot(agentId).queue) || agent.busy) throw new Error(`${agent.name} is busy; stop it first`);
-    this.world.updateAgent(agentId, { claudeSessionId: null });
-    const note = this.createMessage(agentId, { kind: "system" }, SESSION_RESET_TEXT, "complete", null);
-    this.emitMessageCreated(agentId, note, SESSION_RESET_TEXT);
-    this.world.emit({ type: "agent.session_reset", projectId: agent.projectId, agentId, message: `${agent.name}: new session` });
+    if (this.world.getProject(agent.projectId).archived) throw new Error("Project is archived");
+    const active = this.world.getChat(agent.activeChatId);
+    if (active.messageCount === 0) return active;
+    const chat = this.world.addChat(agentId);
+    this.world.updateAgent(agentId, { activeChatId: chat.id });
+    this.world.emit({
+      type: "chat.started",
+      projectId: agent.projectId,
+      agentId,
+      message: `New chat with ${agent.name}`,
+      metadata: { chat } satisfies ChatPayload,
+    });
+    return chat;
+  }
+
+  /** Makes an earlier chat active: my next message resumes its Claude session. */
+  openChat(agentId: string, chatId: string): void {
+    this.chatOf(agentId, chatId);
+    if (this.world.getAgent(agentId).activeChatId !== chatId) this.world.updateAgent(agentId, { activeChatId: chatId });
+  }
+
+  /** Newest first. */
+  listChats(agentId: string): Chat[] {
+    this.world.getAgent(agentId);
+    return this.world.chatsOf(agentId);
+  }
+
+  /** The chat, checked to be this agent's. */
+  private chatOf(agentId: string, chatId: string): Chat {
+    const chat = this.world.getChat(chatId);
+    if (chat.agentId !== agentId) throw new Error(`Chat ${chatId} is not ${this.world.getAgent(agentId).name}'s`);
+    return chat;
+  }
+
+  private emitChatUpdated(chat: Chat): void {
+    this.world.emit({ type: "chat.updated", projectId: chat.projectId, agentId: chat.agentId, message: "", feed: false, metadata: { chat } satisfies ChatPayload });
   }
 
   /** Takes effect from the next input. */
@@ -165,9 +206,17 @@ export class AgentManager {
     });
   }
 
-  /** Creates the user's message and runs it now, or queues it while the agent is busy. */
-  sendMessage(agentId: string, text: string): ChatMessage {
-    return this.enqueueInput(agentId, { kind: "user" }, text, null, null, `You → ${this.world.getAgent(agentId).name}`);
+  /**
+   * Creates my message in `chatId` (default: the active chat, which it becomes) and runs it
+   * now, or queues it while the agent is busy. My first message in a chat becomes its title.
+   */
+  sendMessage(agentId: string, text: string, chatId?: string): ChatMessage {
+    const agent = this.world.getAgent(agentId);
+    if (this.world.getProject(agent.projectId).archived) throw new Error("Project is archived");
+    const chat = this.chatOf(agentId, chatId ?? agent.activeChatId);
+    if (agent.activeChatId !== chat.id) this.world.updateAgent(agentId, { activeChatId: chat.id });
+    if (chat.title === "") this.emitChatUpdated(this.world.updateChat(chat.id, { title: chatTitle(text) }));
+    return this.enqueueInput(agentId, { kind: "user" }, text, null, null, `You → ${agent.name}`, undefined, chat.id);
   }
 
   /**
@@ -207,6 +256,7 @@ export class AgentManager {
     fromAgentId: string | null,
     feedText: string,
     beforeStart?: (message: ChatMessage) => void,
+    chatId: string | null = null,
   ): ChatMessage {
     const agent = this.world.getAgent(agentId);
     const project = this.world.projects.get(agent.projectId);
@@ -214,7 +264,7 @@ export class AgentManager {
 
     const slot = this.slot(agentId);
     const busy = isBusy(slot.queue);
-    const message = this.createMessage(agentId, author, text, busy ? "queued" : "delivered", taskId);
+    const message = this.createMessage(agentId, author, text, busy ? "queued" : "delivered", taskId, chatId);
     this.emitMessageCreated(agentId, message, feedText);
     beforeStart?.(message);
 
@@ -268,10 +318,17 @@ export class AgentManager {
 
   /**
    * Oldest first. `before` is a message id; returns up to `limit` messages older than it.
-   * view "chat": messages outside tasks; "tasks": messages of pipeline tasks.
+   * view "chat": one of my chats (default the active one); "tasks": messages of pipeline tasks.
    */
-  getChatHistory(agentId: string, before?: string, limit: number = CONFIG.chatHistoryDefaultLimit, view: ChatView = "chat"): ChatHistoryPage {
-    const list = this.world.chatFor(agentId).filter((m) => (view === "tasks") === (m.taskId !== null));
+  getChatHistory(
+    agentId: string,
+    before?: string,
+    limit: number = CONFIG.chatHistoryDefaultLimit,
+    view: ChatView = "chat",
+    chatId?: string,
+  ): ChatHistoryPage {
+    const chat = view === "chat" ? this.chatOf(agentId, chatId ?? this.world.getAgent(agentId).activeChatId).id : null;
+    const list = this.world.chatFor(agentId).filter((m) => (view === "tasks" ? m.taskId !== null : m.chatId === chat));
     let end = list.length;
     if (before !== undefined) {
       end = list.findIndex((m) => m.id === before);
@@ -320,6 +377,7 @@ export class AgentManager {
         queue: EMPTY_QUEUE,
         runner: this.createRunner({ id: agent.id, name: agent.name, role: agent.role }),
         runId: 0,
+        chatId: null,
         streamingMessageId: null,
         lastReplyId: null,
         toolMessages: new Map(),
@@ -363,8 +421,11 @@ export class AgentManager {
     const agent = this.world.updateAgent(agentId, { busy: true, currentTaskId: input.taskId, lastError: null });
     this.syncQueueFields(agentId);
     // Task inputs run in the task's own session, with the role's tools (chat only is for direct chat).
+    // A chat input runs in the session of the chat its message was sent to.
     const taskId = input.taskId;
     const hooks = taskId === null ? null : this.taskHooks;
+    const chatId = taskId === null ? (this.world.findMessage(agentId, input.id)?.chatId ?? agent.activeChatId) : null;
+    slot.chatId = chatId;
     // Runners may take seconds before their first status (model thinking); never look idle while busy.
     this.setStatus(agentId, "thinking", hooks === null ? "Reading your message" : hooks.activityFor(input));
 
@@ -372,7 +433,8 @@ export class AgentManager {
       {
         agentId,
         text: input.text,
-        sessionId: taskId === null || hooks === null ? agent.claudeSessionId : hooks.sessionFor(taskId, agentId),
+        sessionId:
+          taskId !== null && hooks !== null ? hooks.sessionFor(taskId, agentId) : chatId === null ? null : this.world.getChat(chatId).claudeSessionId,
         cwd: this.world.getProjectRoot(agent.projectId),
         chatOnly: taskId === null ? agent.chatOnly : false,
         model: agent.model,
@@ -405,7 +467,9 @@ export class AgentManager {
         onSession: (sessionId) => {
           if (!live()) return;
           if (taskId !== null && hooks !== null) hooks.setSession(taskId, agentId, sessionId);
-          else if (this.world.getAgent(agentId).claudeSessionId !== sessionId) this.world.updateAgent(agentId, { claudeSessionId: sessionId });
+          else if (chatId !== null && this.world.getChat(chatId).claudeSessionId !== sessionId) {
+            this.emitChatUpdated(this.world.updateChat(chatId, { claudeSessionId: sessionId }));
+          }
         },
         onAuth: (source) => {
           if (!live() || this.world.auth.source === source) return;
@@ -569,9 +633,12 @@ export class AgentManager {
     slot.toolMessages.clear();
   }
 
+  /** The run's tokens go on its last reply; a chat's context size is the run's prompt tokens. */
   private attachUsage(agentId: string): void {
     const slot = this.slot(agentId);
-    if (slot.usage === null || slot.lastReplyId === null) return;
+    if (slot.usage === null) return;
+    if (slot.chatId !== null) this.emitChatUpdated(this.world.updateChat(slot.chatId, { contextTokens: slot.usage.inputTokens }));
+    if (slot.lastReplyId === null) return;
     const message = this.world.updateMessage(agentId, slot.lastReplyId, { usage: slot.usage });
     this.emitMessageCompleted(agentId, message);
   }
@@ -582,6 +649,8 @@ export class AgentManager {
     text: string,
     status: ChatMessage["status"],
     taskId: string | null,
+    /** Default: the running chat input's chat (task messages have none). */
+    chatId: string | null = taskId === null ? this.slot(agentId).chatId : null,
   ): ChatMessage {
     const agent = this.world.getAgent(agentId);
     const message: ChatMessage = {
@@ -591,11 +660,13 @@ export class AgentManager {
       author,
       text,
       taskId,
+      chatId: taskId === null ? (chatId ?? agent.activeChatId) : null,
       pinned: false,
       status,
       createdAt: this.world.now(),
     };
-    this.world.addMessage(message);
+    const chat = this.world.addMessage(message);
+    if (chat !== null) this.emitChatUpdated(chat);
     return message;
   }
 

@@ -81,9 +81,16 @@ try {
   const agent = snapshot?.agents.find((a) => a.id === agentId);
   const auth = snapshot?.auth.source ?? null;
   console.log(`Reply: ${JSON.stringify(reply)}`);
-  console.log(`Session: ${agent?.claudeSessionId ?? "none"}, auth source: ${auth}`);
+  const session =
+    agent === undefined
+      ? null
+      : messages
+          .flatMap((m) => (m.type === "event" && m.event.agentId === agentId ? [readPayload(m.event, "chat.updated", eventPayloadSchemas.chat)] : []))
+          .filter((p) => p?.chat.id === agent.activeChatId)
+          .at(-1)?.chat.claudeSessionId;
+  console.log(`Session: ${session ?? "none"}, auth source: ${auth}`);
 
-  assert.ok(agent?.claudeSessionId, "a session id arrives");
+  assert.ok(session, "a session id arrives");
   assert.match(reply, /pong/i, "the reply contains pong");
   assert.ok(auth !== null, "auth source reported");
   assert.ok(!isApiKeyBilling(auth), `auth source is not an API key (${auth})`);

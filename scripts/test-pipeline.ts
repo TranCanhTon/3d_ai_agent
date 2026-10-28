@@ -529,21 +529,23 @@ await check("12. restart mid task (persisted data) → paused 'Server restarted'
   assert.equal(task(after, id).endReason, "done");
 });
 
-await check("13. task sessions are separate from the chat session; Reset session leaves them alone", async () => {
+await check("13. task sessions are separate from chat sessions; a new chat leaves them alone", async () => {
   const b = fresh();
   const engineer = agentOf(b, "engineer");
+  const chatSessionOf = () => b.world.getChat(b.world.getAgent(engineer).activeChatId).claudeSessionId;
   b.agents.sendMessage(engineer, "What does this repo do?");
-  await until(() => b.world.getAgent(engineer).claudeSessionId !== null && !b.world.getAgent(engineer).busy, "chat done");
-  const chatSession = b.world.getAgent(engineer).claudeSessionId;
+  await until(() => chatSessionOf() !== null && !b.world.getAgent(engineer).busy, "chat done");
+  const chatSession = chatSessionOf();
   const id = submit(b);
   await untilEnded(b, id);
   const taskCall = b.runners.calls.find((c) => c.role === "engineer" && c.text.includes("Add dark mode"));
   assert.equal(taskCall?.sessionId, null, "a task starts a fresh session");
   const taskSession = task(b, id).sessions.engineer;
   assert.ok(taskSession !== undefined && taskSession !== chatSession);
-  assert.equal(b.world.getAgent(engineer).claudeSessionId, chatSession, "the task did not touch the chat session");
-  b.agents.resetSession(engineer);
-  assert.equal(b.world.getAgent(engineer).claudeSessionId, null);
+  assert.equal(chatSessionOf(), chatSession, "the task did not touch the chat session");
+  assert.ok(b.agents.getChatHistory(engineer).messages.every((m) => m.taskId === null), "task messages are not in the chat");
+  b.agents.newChat(engineer);
+  assert.equal(chatSessionOf(), null, "the new chat has no session yet");
   assert.equal(task(b, id).sessions.engineer, taskSession);
   // A second task gets its own sessions again.
   const second = submit(b, "Second");

@@ -3,7 +3,7 @@
 
 import type { AgentRunnerKind } from "../config.ts";
 import type { AgentState, EffortLevel } from "../domain/agentTypes.ts";
-import type { ChatMessage } from "../domain/chatTypes.ts";
+import type { Chat, ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionDecision, PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import type { Task, TaskPriority } from "../domain/taskTypes.ts";
@@ -58,11 +58,16 @@ export interface CommandArgsMap {
   /** Hides a project; its data is kept and its agents refuse messages. */
   archiveProject: { projectId: string };
   restoreProject: { projectId: string };
-  sendMessage: { agentId: string; text: string };
+  /** Goes to `chatId` (default: the active chat), which becomes the active chat. */
+  sendMessage: { agentId: string; text: string; chatId?: string };
   cancelQueued: { agentId: string; messageId: string };
   stopAgent: { agentId: string };
-  /** Only while the agent is not busy. The next message starts a new Claude session. */
-  resetAgentSession: { agentId: string };
+  /** Starts a new chat (a new Claude session) and makes it active; returns the active chat when it is still empty. */
+  newChat: { agentId: string };
+  /** Makes an earlier chat active again; the next message resumes its session. */
+  openChat: { agentId: string; chatId: string };
+  /** The agent's chats, newest first. */
+  listChats: { agentId: string };
   setChatOnly: { agentId: string; chatOnly: boolean };
   /** Takes effect from the agent's next run (chat or task step); a running one is not changed. */
   setAgentModel: { agentId: string; model: string; effort: EffortLevel | null };
@@ -78,9 +83,9 @@ export interface CommandArgsMap {
   getNotes: { projectId: string };
   /**
    * `before` is a message id; returns messages older than it, newest last.
-   * view "chat" (default): my direct chat (taskId null); "tasks": the agent's task messages.
+   * view "chat" (default): one of my chats (`chatId`, default the active one); "tasks": the agent's task messages.
    */
-  getChatHistory: { agentId: string; before?: string; limit?: number; view?: ChatView };
+  getChatHistory: { agentId: string; before?: string; limit?: number; view?: ChatView; chatId?: string };
   getSnapshot: Record<string, never>;
 }
 
@@ -120,7 +125,9 @@ export interface CommandResultMap {
   sendMessage: ChatMessage;
   cancelQueued: null;
   stopAgent: null;
-  resetAgentSession: null;
+  newChat: Chat;
+  openChat: null;
+  listChats: Chat[];
   setChatOnly: null;
   setAgentModel: null;
   submitTask: Task;
