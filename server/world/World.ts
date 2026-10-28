@@ -11,6 +11,7 @@ import { AGENT_ROLES, ROLE_DEFINITIONS, type AgentRole } from "../../src/shared/
 import type { Task } from "../../src/shared/domain/taskTypes.ts";
 import type { AgentEvent } from "../../src/shared/events/eventTypes.ts";
 import { makeAgentId, newId } from "../../src/shared/ids.ts";
+import { isModelId } from "../../src/shared/protocol/schemas.ts";
 import type { AuthState, CommLink, UsageState, WorldSnapshot } from "../../src/shared/protocol/protocol.ts";
 import type { DataStore, SavedAgent, SavedTask } from "../store/DataStore.ts";
 
@@ -24,7 +25,7 @@ export interface WorldHooks {
 }
 
 /** Agent fields that are saved; changing one of them rewrites the project's agents file. */
-const SAVED_AGENT_FIELDS = ["name", "claudeSessionId", "chatOnly"] as const;
+const SAVED_AGENT_FIELDS = ["name", "claudeSessionId", "chatOnly", "model", "effort"] as const;
 
 export const INTERRUPTED = "[interrupted]";
 
@@ -181,6 +182,9 @@ export class World {
 
   private newAgent(projectId: string, role: AgentRole, saved: SavedAgent | undefined): AgentState {
     const def = ROLE_DEFINITIONS[role];
+    const defaults = CONFIG.roleModelDefaults[role];
+    // A saved model that is no longer offered falls back to the role default (effort with it).
+    const savedModel = saved?.model !== undefined && isModelId(saved.model) ? saved.model : undefined;
     return {
       id: makeAgentId(projectId, role),
       projectId,
@@ -192,6 +196,9 @@ export class World {
       currentTaskId: null,
       claudeSessionId: saved?.claudeSessionId ?? null,
       chatOnly: saved?.chatOnly ?? false,
+      model: savedModel ?? defaults.model,
+      effort: savedModel === undefined ? defaults.effort : (saved?.effort ?? null),
+      lastRun: null,
       busy: false,
       queuedCount: 0,
       lastError: null,
@@ -315,6 +322,8 @@ export class World {
           name: a.name,
           claudeSessionId: a.claudeSessionId,
           chatOnly: a.chatOnly,
+          model: a.model,
+          effort: a.effort,
           queue: this.queues.get(a.id) ?? [],
         }),
       );

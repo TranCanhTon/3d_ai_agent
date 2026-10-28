@@ -1,4 +1,4 @@
-import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
+import type { AgentStatus, EffortLevel, RunModelInfo } from "../../src/shared/domain/agentTypes.ts";
 import type { TokenUsage } from "../../src/shared/domain/chatTypes.ts";
 import type { AgentRole } from "../../src/shared/domain/roles.ts";
 
@@ -11,6 +11,10 @@ export interface AgentRunInput {
   cwd: string;
   /** No tools at all for this run. */
   chatOnly: boolean;
+  /** Claude model alias (one of config.models). */
+  model: string;
+  /** null = the model's default (no effort option). */
+  effort: EffortLevel | null;
 }
 
 export type ToolEvent =
@@ -28,6 +32,8 @@ export interface AgentRunCallbacks {
   onTool(event: ToolEvent): void;
   /** Where the credential comes from ("none" = subscription login). */
   onAuth(source: string): void;
+  /** What the run actually used, as Claude reports it; may be called again with a newer value. */
+  onRunInfo(info: RunModelInfo): void;
   /** Subscription usage limit hit; resetsAt in epoch ms when known. */
   onUsageLimit(resetsAt: number | null): void;
   /** The add_note tool: appends to the project's notes. Returns the line written; throws on bad input. */

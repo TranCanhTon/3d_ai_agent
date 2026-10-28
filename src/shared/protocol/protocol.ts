@@ -2,7 +2,7 @@
 // schemas.ts holds the matching zod schemas and fails typecheck if they drift.
 
 import type { AgentRunnerKind } from "../config.ts";
-import type { AgentState } from "../domain/agentTypes.ts";
+import type { AgentState, EffortLevel } from "../domain/agentTypes.ts";
 import type { ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionDecision, PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
@@ -64,6 +64,8 @@ export interface CommandArgsMap {
   /** Only while the agent is not busy. The next message starts a new Claude session. */
   resetAgentSession: { agentId: string };
   setChatOnly: { agentId: string; chatOnly: boolean };
+  /** Takes effect from the agent's next run (chat or task step); a running one is not changed. */
+  setAgentModel: { agentId: string; model: string; effort: EffortLevel | null };
   submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority };
   cancelTask: { taskId: string };
   /** Only for a paused task without a question. */
@@ -120,6 +122,7 @@ export interface CommandResultMap {
   stopAgent: null;
   resetAgentSession: null;
   setChatOnly: null;
+  setAgentModel: null;
   submitTask: Task;
   cancelTask: null;
   resumeTask: null;

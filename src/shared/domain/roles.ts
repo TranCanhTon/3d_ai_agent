@@ -1,4 +1,3 @@
-import { CONFIG } from "../config.ts";
 import type { StationId } from "./agentTypes.ts";
 
 /** Pipeline order: Orchestrator hands to PM, PM to Researcher, and so on. */
@@ -27,7 +26,6 @@ export interface RoleDefinition {
   homeStation: StationId;
   maxTurns: number;
   allowedTools: ToolName[];
-  model: string;
   canEditCode: boolean;
   canCommit: boolean;
 }
@@ -44,7 +42,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "hub",
     maxTurns: 15,
     allowedTools: [...READ_TOOLS, "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: false,
     canCommit: false,
   },
@@ -57,7 +54,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "product",
     maxTurns: 15,
     allowedTools: [...READ_TOOLS, "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: false,
     canCommit: false,
   },
@@ -70,7 +66,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "research",
     maxTurns: 15,
     allowedTools: [...READ_TOOLS, "WebSearch", "WebFetch", "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: false,
     canCommit: false,
   },
@@ -83,7 +78,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "dev",
     maxTurns: 30,
     allowedTools: [...READ_TOOLS, "Edit", "Write", "Bash", "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: true,
     canCommit: true,
   },
@@ -96,7 +90,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "testing",
     maxTurns: 15,
     allowedTools: [...READ_TOOLS, "Bash", "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: false,
     canCommit: false,
   },
@@ -109,7 +102,6 @@ export const ROLE_DEFINITIONS: Record<AgentRole, RoleDefinition> = {
     homeStation: "review",
     maxTurns: 15,
     allowedTools: [...READ_TOOLS, "Bash", "add_note"],
-    model: CONFIG.defaultModel,
     canEditCode: false,
     canCommit: false,
   },

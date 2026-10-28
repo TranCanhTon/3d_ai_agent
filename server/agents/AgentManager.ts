@@ -4,7 +4,7 @@
 // they run in the task's own Claude session and report how they ended to the TaskHooks.
 
 import { CONFIG } from "../../src/shared/config.ts";
-import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
+import type { AgentStatus, EffortLevel } from "../../src/shared/domain/agentTypes.ts";
 import { ROLE_DEFINITIONS } from "../../src/shared/domain/roles.ts";
 import type { ChatAuthor, ChatMessage, TokenUsage } from "../../src/shared/domain/chatTypes.ts";
 import {
@@ -81,6 +81,11 @@ export type NoteWriter = (agentId: string, text: string) => string;
 
 export const SESSION_RESET_TEXT = "New session started";
 
+/** "opus · high", or "opus · default" without an effort. */
+export function modelLabel(model: string, effort: EffortLevel | null): string {
+  return `${model} · ${effort ?? "default"}`;
+}
+
 export class AgentManager {
   private readonly slots = new Map<string, AgentSlot>();
   private readonly world: World;
@@ -143,6 +148,21 @@ export class AgentManager {
   /** Takes effect from the next input. */
   setChatOnly(agentId: string, chatOnly: boolean): void {
     this.world.updateAgent(agentId, { chatOnly });
+  }
+
+  /** Takes effect from the next run (chat or task step); a running one keeps what it started with. */
+  setAgentModel(agentId: string, model: string, effort: EffortLevel | null): void {
+    if (!CONFIG.models.some((choice) => choice.id === model)) throw new Error(`Unknown model: ${model}`);
+    if (effort !== null && !CONFIG.effortLevels.includes(effort)) throw new Error(`Unknown effort: ${effort}`);
+    const current = this.world.getAgent(agentId);
+    if (current.model === model && current.effort === effort) return;
+    const agent = this.world.updateAgent(agentId, { model, effort });
+    this.world.emit({
+      type: "agent.settings_changed",
+      projectId: agent.projectId,
+      agentId,
+      message: `${agent.name}: ${modelLabel(model, effort)}`,
+    });
   }
 
   /** Creates the user's message and runs it now, or queues it while the agent is busy. */
@@ -355,6 +375,8 @@ export class AgentManager {
         sessionId: taskId === null || hooks === null ? agent.claudeSessionId : hooks.sessionFor(taskId, agentId),
         cwd: this.world.getProjectRoot(agent.projectId),
         chatOnly: taskId === null ? agent.chatOnly : false,
+        model: agent.model,
+        effort: agent.effort,
       },
       {
         addNote: (text) => {
@@ -389,6 +411,11 @@ export class AgentManager {
           if (!live() || this.world.auth.source === source) return;
           this.world.auth = { source };
           this.world.changed();
+        },
+        onRunInfo: (info) => {
+          if (!live()) return;
+          const lastRun = this.world.getAgent(agentId).lastRun;
+          if (lastRun?.model !== info.model || lastRun.effort !== info.effort) this.world.updateAgent(agentId, { lastRun: info });
         },
         onUsage: (usage) => {
           if (live()) slot.usage = usage;

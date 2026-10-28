@@ -43,6 +43,9 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
     case "setChatOnly":
       ctx.agents.setChatOnly(command.args.agentId, command.args.chatOnly);
       return null;
+    case "setAgentModel":
+      ctx.agents.setAgentModel(command.args.agentId, command.args.model, command.args.effort);
+      return null;
     case "getChatHistory":
       return ctx.agents.getChatHistory(command.args.agentId, command.args.before, command.args.limit, command.args.view);
     case "submitTask":

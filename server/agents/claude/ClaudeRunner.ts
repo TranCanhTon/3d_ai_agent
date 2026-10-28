@@ -18,7 +18,7 @@ import { buildRolePrompt } from "../../roles/rolePrompts.ts";
 import type { AgentRunCallbacks, AgentRunInput, AgentRunner } from "../AgentRunner.ts";
 import type { PermissionBroker } from "../PermissionBroker.ts";
 import { createNotesServer } from "./notesTool.ts";
-import { classifyErrorText, isApiKeyBilling, translate, type TranslatorAction } from "./translate.ts";
+import { classifyErrorText, isApiKeyBilling, readHookEffort, translate, type TranslatorAction } from "./translate.ts";
 
 /** If any of these is set, Claude would bill an API key or a cloud account instead of the subscription. */
 export const BILLING_ENV_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"];
@@ -122,6 +122,18 @@ export class ClaudeRunner implements AgentRunner {
     const stderrTail: string[] = [];
     let finished = false;
     let resetsAt: number | null = null;
+    // What actually ran: the model from init, the effort from hook inputs.
+    let ranModel: string | null = null;
+    let ranEffort: string | null = null;
+    const reportRunInfo = () => {
+      if (live() && ranModel !== null) callbacks.onRunInfo({ model: ranModel, effort: ranEffort });
+    };
+    const noteEffort = (hookInput: HookInput) => {
+      const effort = readHookEffort(hookInput);
+      if (effort === null || effort === ranEffort) return;
+      ranEffort = effort;
+      reportRunInfo();
+    };
 
     const fail = (message: string) => {
       if (finished || !live()) return;
@@ -144,6 +156,7 @@ export class ClaudeRunner implements AgentRunner {
     // the call to canUseTool even when it would otherwise auto-approve it.
     const preToolUse = async (hookInput: HookInput): Promise<HookJSONOutput> => {
       if (hookInput.hook_event_name !== "PreToolUse") return {};
+      noteEffort(hookInput);
       const outcome = explainPermission(agent.role, hookInput.tool_name, hookInput.tool_input, CONFIG, toolOverride);
       if (outcome.verdict === "allow") return {};
       return {
@@ -158,7 +171,8 @@ export class ClaudeRunner implements AgentRunner {
 
     const options: Options = {
       cwd: input.cwd,
-      model: role.model,
+      model: input.model,
+      ...(input.effort === null ? {} : { effort: input.effort }),
       maxTurns: role.maxTurns,
       resume: input.sessionId ?? undefined,
       includePartialMessages: true,
@@ -179,7 +193,20 @@ export class ClaudeRunner implements AgentRunner {
       settings: { disableClaudeAiConnectors: true },
       // Hide skills from the model; the role prompt says what to do.
       skills: [],
-      hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
+      // Stop only reads the applied effort (runs without tool calls never reach PreToolUse).
+      hooks: {
+        PreToolUse: [{ hooks: [preToolUse] }],
+        Stop: [
+          {
+            hooks: [
+              async (hookInput: HookInput): Promise<HookJSONOutput> => {
+                noteEffort(hookInput);
+                return {};
+              },
+            ],
+          },
+        ],
+      },
       canUseTool: (toolName, toolInput, { signal }) => broker.decide(agent.id, toolName, toolInput, signal, toolOverride),
       abortController: abort,
       env: this.env,
@@ -207,6 +234,10 @@ export class ClaudeRunner implements AgentRunner {
           break;
         case "session":
           callbacks.onSession(action.id);
+          break;
+        case "model":
+          ranModel = action.model;
+          reportRunInfo();
           break;
         case "auth":
           log(`${agent.id} auth source: ${action.source}`);

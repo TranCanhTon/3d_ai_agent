@@ -1,6 +1,8 @@
 // Every limit and setting for the app lives here (hard rule 3).
 // Pure TypeScript: loaded by Next, the Node server and scripts/test.ts.
 
+import { EFFORT_LEVELS, type EffortLevel } from "./domain/agentTypes.ts";
+import type { AgentRole } from "./domain/roles.ts";
 import type { WorkflowPhase } from "./domain/taskTypes.ts";
 
 export interface GitPolicy {
@@ -46,6 +48,18 @@ export interface ShellPolicy {
   reviewerAllowedGroups: ShellGroup[];
 }
 
+/** A Claude model the agents can use, by Claude Code alias. */
+export interface ModelChoice {
+  id: string;
+  label: string;
+}
+
+export interface ModelSetting {
+  model: string;
+  /** null = the model's default (no effort option is sent). */
+  effort: EffortLevel | null;
+}
+
 export interface AppConfig {
   serverHost: string;
   serverPort: number;
@@ -66,7 +80,12 @@ export interface AppConfig {
   projectNameMaxChars: number;
   /** The 3D view holds each robot animation at least this long. */
   minStatusDisplayMs: number;
-  defaultModel: string;
+  /** Models offered per agent (Claude Code aliases). */
+  models: ModelChoice[];
+  /** Reasoning effort levels offered per agent. */
+  effortLevels: readonly EffortLevel[];
+  /** Model and effort of a new agent, by role. Each agent keeps its own afterwards. */
+  roleModelDefaults: Record<AgentRole, ModelSetting>;
   git: GitPolicy;
   shell: ShellPolicy;
   /** Longest chat message or task description accepted from the client. */
@@ -140,7 +159,20 @@ export const CONFIG: AppConfig = {
   blockedProjectRoots: [APP_ROOT],
   projectNameMaxChars: 60,
   minStatusDisplayMs: 1000,
-  defaultModel: "sonnet",
+  models: [
+    { id: "opus", label: "Opus" },
+    { id: "sonnet", label: "Sonnet" },
+    { id: "haiku", label: "Haiku" },
+  ],
+  effortLevels: EFFORT_LEVELS,
+  roleModelDefaults: {
+    orchestrator: { model: "sonnet", effort: "low" },
+    product_manager: { model: "sonnet", effort: "medium" },
+    researcher: { model: "sonnet", effort: "medium" },
+    engineer: { model: "opus", effort: "high" },
+    qa: { model: "sonnet", effort: "medium" },
+    reviewer: { model: "opus", effort: "medium" },
+  },
   git: {
     commitRequiresApproval: false,
     pushRequiresApproval: true,

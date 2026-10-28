@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { EFFORT_LEVELS, type EffortLevel } from "../../src/shared/domain/agentTypes.ts";
 import type { ChatAuthor, ChatMessage } from "../../src/shared/domain/chatTypes.ts";
 import type { AgentInput } from "../../src/shared/domain/messageQueue.ts";
 import type { Project } from "../../src/shared/domain/projectTypes.ts";
@@ -25,6 +26,9 @@ export interface SavedAgent {
   name: string;
   claudeSessionId: string | null;
   chatOnly: boolean;
+  /** Missing in files saved before agents had their own model: the role default. */
+  model?: string;
+  effort?: EffortLevel | null;
   /** Inputs waiting in the agent's queue (not the one running). */
   queue: AgentInput[];
 }
@@ -81,6 +85,8 @@ const savedAgentSchema = z.object({
   name: z.string(),
   claudeSessionId: z.string().nullable(),
   chatOnly: z.boolean().default(false),
+  model: z.string().optional(),
+  effort: z.enum(EFFORT_LEVELS).nullable().optional(),
   queue: z.array(agentInputSchema).default([]),
 });
 

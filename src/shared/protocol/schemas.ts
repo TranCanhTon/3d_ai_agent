@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { CONFIG } from "../config.ts";
-import { AGENT_STATUSES, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
+import { AGENT_STATUSES, EFFORT_LEVELS, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
 import { CHAT_MESSAGE_STATUSES, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
@@ -55,6 +55,9 @@ export const agentStateSchema = z.object({
   currentTaskId: z.string().nullable(),
   claudeSessionId: z.string().nullable(),
   chatOnly: z.boolean(),
+  model: z.string(),
+  effort: z.enum(EFFORT_LEVELS).nullable(),
+  lastRun: z.object({ model: z.string(), effort: z.string().nullable() }).nullable(),
   busy: z.boolean(),
   queuedCount: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
@@ -163,6 +166,11 @@ export const worldSnapshotSchema = z.object({
 
 const text = z.string().min(1).max(CONFIG.maxMessageChars);
 
+/** One of config.models. */
+export function isModelId(value: string): boolean {
+  return CONFIG.models.some((model) => model.id === value);
+}
+
 function command<N extends string, A extends z.ZodRawShape>(name: N, args: A) {
   return z.strictObject({ name: z.literal(name), args: z.strictObject(args) });
 }
@@ -181,6 +189,11 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
   command("stopAgent", { agentId: id }),
   command("resetAgentSession", { agentId: id }),
   command("setChatOnly", { agentId: id, chatOnly: z.boolean() }),
+  command("setAgentModel", {
+    agentId: id,
+    model: z.string().refine((value) => isModelId(value), { message: "Unknown model" }),
+    effort: z.enum(EFFORT_LEVELS).nullable(),
+  }),
   command("submitTask", {
     projectId: id,
     title: z.string().trim().min(1).max(CONFIG.maxTaskTitleChars),
@@ -246,6 +259,7 @@ export const commandResultSchemas = {
   stopAgent: z.null(),
   resetAgentSession: z.null(),
   setChatOnly: z.null(),
+  setAgentModel: z.null(),
   submitTask: taskSchema,
   cancelTask: z.null(),
   resumeTask: z.null(),

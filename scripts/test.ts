@@ -97,8 +97,22 @@ check("maxTurns 30 for engineer, 15 for the rest", () => {
   }
 });
 
-check("model defaults to config.defaultModel", () => {
-  for (const role of AGENT_ROLES) assert.equal(ROLE_DEFINITIONS[role].model, CONFIG.defaultModel);
+check("role model defaults: opus for engineer and reviewer, sonnet for the rest, all offered", () => {
+  assert.deepEqual(CONFIG.roleModelDefaults, {
+    orchestrator: { model: "sonnet", effort: "low" },
+    product_manager: { model: "sonnet", effort: "medium" },
+    researcher: { model: "sonnet", effort: "medium" },
+    engineer: { model: "opus", effort: "high" },
+    qa: { model: "sonnet", effort: "medium" },
+    reviewer: { model: "opus", effort: "medium" },
+  });
+  assert.deepEqual(CONFIG.models.map((m) => m.id), ["opus", "sonnet", "haiku"]);
+  assert.deepEqual([...CONFIG.effortLevels], ["low", "medium", "high", "xhigh", "max"]);
+  for (const role of AGENT_ROLES) {
+    const { model, effort } = CONFIG.roleModelDefaults[role];
+    assert.ok(CONFIG.models.some((m) => m.id === model), model);
+    assert.ok(effort === null || CONFIG.effortLevels.includes(effort), String(effort));
+  }
 });
 
 // ── 2. Ids ──────────────────────────────────────────────────────────────────
@@ -717,6 +731,8 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "stopAgent", args: { agentId: "proj_1:engineer" } },
   { name: "resetAgentSession", args: { agentId: "proj_1:qa" } },
   { name: "setChatOnly", args: { agentId: "proj_1:qa", chatOnly: true } },
+  { name: "setAgentModel", args: { agentId: "proj_1:researcher", model: "sonnet", effort: "medium" } },
+  { name: "setAgentModel", args: { agentId: "proj_1:engineer", model: "opus", effort: null } },
   { name: "submitTask", args: { projectId: "proj_1", title: "Add dark mode", description: "All pages", priority: "high" } },
   { name: "cancelTask", args: { taskId: "task_1" } },
   { name: "resumeTask", args: { taskId: "task_1" } },
@@ -731,7 +747,7 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 18);
+  assert.equal(names.size, 19);
 });
 
 for (const command of EXAMPLE_COMMANDS) {
@@ -782,6 +798,18 @@ expectRejected(
   JSON.stringify({ type: "command", id: "c1", command: { name: "respondPermission", args: { requestId: "p", decision: "maybe" } } }),
 );
 expectRejected(
+  "unknown model",
+  JSON.stringify({ type: "command", id: "c1", command: { name: "setAgentModel", args: { agentId: "a", model: "gpt-4", effort: "high" } } }),
+);
+expectRejected(
+  "unknown effort",
+  JSON.stringify({ type: "command", id: "c1", command: { name: "setAgentModel", args: { agentId: "a", model: "opus", effort: "ultra" } } }),
+);
+expectRejected(
+  "setAgentModel without effort (null means default, it is not optional)",
+  JSON.stringify({ type: "command", id: "c1", command: { name: "setAgentModel", args: { agentId: "a", model: "opus" } } }),
+);
+expectRejected(
   "message over maxMessageChars",
   JSON.stringify({
     type: "command",
@@ -807,6 +835,9 @@ const snapshot: WorldSnapshot = {
     currentTaskId: null,
     claudeSessionId: null,
     chatOnly: false,
+    model: CONFIG.roleModelDefaults[role].model,
+    effort: CONFIG.roleModelDefaults[role].effort,
+    lastRun: role === "engineer" ? { model: "claude-opus-5-5", effort: "medium" } : null,
     busy: false,
     queuedCount: 0,
     lastError: null,

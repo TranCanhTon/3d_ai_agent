@@ -33,6 +33,7 @@ export const EVENT_TYPES = [
   "agent.waiting_user",
   "agent.stopped",
   "agent.session_reset",
+  "agent.settings_changed",
   "agent.error",
   "chat.message_created",
   "chat.message_delta",

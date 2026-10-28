@@ -442,6 +442,37 @@ await check("setChatOnly is saved on the agent and passed to the next run", asyn
   assert.equal(runs.at(-1)?.chatOnly, true);
 });
 
+await check("setAgentModel: role defaults, saved on the agent, passed to the next run, bad values refused", async () => {
+  const engineerId = shopAgent("engineer");
+  const before = await client.agent(engineerId);
+  assert.deepEqual([before.model, before.effort], ["opus", "high"], "the engineer's role default");
+  assert.deepEqual([(await client.agent(shopAgent("researcher"))).model, (await client.agent(shopAgent("researcher"))).effort], ["sonnet", "medium"]);
+  await client.ok("setAgentModel", { agentId: engineerId, model: "haiku", effort: null });
+  const changed = await client.waitForEvent((e) => e.type === "agent.settings_changed" && e.agentId === engineerId, "settings_changed");
+  assert.equal(changed.message, "STD Dren: haiku · default");
+  assert.equal(changed.feed, true);
+  assert.deepEqual([(await client.agent(engineerId)).model, (await client.agent(engineerId)).effort], ["haiku", null]);
+  await client.ok("sendMessage", { agentId: engineerId, text: "which model?" });
+  await client.waitReplied(engineerId, "ok: which model?");
+  assert.deepEqual([runs.at(-1)?.model, runs.at(-1)?.effort], ["haiku", null]);
+  assert.match(await client.error("setAgentModel", { agentId: engineerId, model: "gpt-4", effort: "high" }), /Unknown model/);
+  assert.match(await client.error("setAgentModel", { agentId: engineerId, model: "opus", effort: "ultra" }), /effort/);
+  assert.match(await client.error("setAgentModel", { agentId: "proj_nope:qa", model: "opus", effort: "high" }), /Unknown agent/);
+});
+
+await check("setAgentModel while busy: the running input keeps its model, the next one gets the new one", async () => {
+  const qa = shopAgent("qa");
+  await client.ok("sendMessage", { agentId: qa, text: "hold the line" });
+  await client.waitForEvent((e) => e.type === "chat.message_delta" && e.agentId === qa, "qa streaming");
+  assert.deepEqual([runs.at(-1)?.model, runs.at(-1)?.effort], ["sonnet", "medium"]);
+  await client.ok("setAgentModel", { agentId: qa, model: "opus", effort: "max" });
+  await client.ok("stopAgent", { agentId: qa });
+  await client.waitIdle(qa);
+  await client.ok("sendMessage", { agentId: qa, text: "now" });
+  await client.waitReplied(qa, "ok: now");
+  assert.deepEqual([runs.at(-1)?.model, runs.at(-1)?.effort], ["opus", "max"]);
+});
+
 await check("archive: agents refuse messages, the project stays listed; restore brings them back", async () => {
   const fresh = (await client.snapshot()).projects.find((p) => p.name === "Fresh");
   assert.ok(fresh !== undefined);
@@ -479,6 +510,22 @@ await check("before restart: a streaming reply with two queued messages", async 
 client.close();
 await server.close();
 runs.length = 0;
+// The Fresh project's agents file as an older version saved it: no model or effort.
+const freshFile = () => {
+  const projects = JSON.parse(readFileSync(join(dataDir, "projects.json"), "utf8")) as Project[];
+  const fresh = projects.find((p) => p.name === "Fresh");
+  assert.ok(fresh !== undefined);
+  return { id: fresh.id, path: join(dataDir, "agents", `${fresh.id}.json`) };
+};
+{
+  const { path } = freshFile();
+  const saved = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[];
+  for (const agent of saved) {
+    delete agent.model;
+    delete agent.effort;
+  }
+  writeFileSync(path, JSON.stringify(saved), "utf8");
+}
 ({ server, client } = await boot());
 
 await check("after restart: projects, agents, session ids and chat only are back", async () => {
@@ -493,6 +540,14 @@ await check("after restart: projects, agents, session ids and chat only are back
     assert.equal(agent.claudeSessionId, sessionsBefore.get(agent.id), agent.id);
   }
   assert.equal((await client.agent(shopAgent("product_manager"))).chatOnly, true);
+  const engineerAfter = await client.agent(shopAgent("engineer"));
+  assert.deepEqual([engineerAfter.model, engineerAfter.effort], ["haiku", null], "model settings survive a restart");
+  const qaAfter = await client.agent(shopAgent("qa"));
+  assert.deepEqual([qaAfter.model, qaAfter.effort], ["opus", "max"]);
+  for (const role of AGENT_ROLES) {
+    const agent = await client.agent(makeAgentId(freshFile().id, role));
+    assert.deepEqual([agent.model, agent.effort], [CONFIG.roleModelDefaults[role].model, CONFIG.roleModelDefaults[role].effort], `old saved ${role} gets the role default`);
+  }
   assert.equal((await client.agent(shopAgent("engineer"))).claudeSessionId !== null, true);
 });
 

@@ -46,6 +46,8 @@ interface Call {
   role: AgentRole;
   text: string;
   sessionId: string | null;
+  model: string;
+  effort: string | null;
   /** 1-based count of this role's calls in this boot. */
   n: number;
 }
@@ -81,7 +83,7 @@ class Runners {
       run: (input: AgentRunInput, callbacks: AgentRunCallbacks) => {
         const n = (this.counts.get(agent.role) ?? 0) + 1;
         this.counts.set(agent.role, n);
-        const call: Call = { agentId: agent.id, role: agent.role, text: input.text, sessionId: input.sessionId, n };
+        const call: Call = { agentId: agent.id, role: agent.role, text: input.text, sessionId: input.sessionId, model: input.model, effort: input.effort, n };
         this.calls.push(call);
         timer = setTimeout(() => {
           timer = null;
@@ -630,6 +632,29 @@ await check("a permission card during a step: 'Waiting for your OK' until answer
   b.runners.release(engineer, DEFAULT_REPLIES.engineer({} as Call) as string);
   b.runners.script = {};
   await untilEnded(b, id);
+});
+
+await check("a step runs with its agent's model at step start; a change mid step affects the next step only", async () => {
+  const b = fresh({ engineer: (call) => (call.n === 1 ? { hang: true } : DEFAULT_REPLIES.engineer(call)) });
+  const engineer = agentOf(b, "engineer");
+  b.agents.setAgentModel(agentOf(b, "product_manager"), "haiku", "low");
+  const id = submit(b);
+  await until(() => b.runners.isHanging(engineer), "engineer step running");
+  assert.deepEqual(
+    b.runners.calls.filter((c) => c.role === "product_manager").map((c) => [c.model, c.effort]),
+    [["haiku", "low"]],
+    "planning used the PM's setting",
+  );
+  const first = b.runners.calls.find((c) => c.role === "engineer");
+  assert.deepEqual([first?.model, first?.effort], ["opus", "high"]);
+  // Changed while the engineer works: QA and review must not be affected, only his next run.
+  b.agents.setAgentModel(engineer, "sonnet", null);
+  b.runners.script.qa = (call) => (call.n === 1 ? "broken\nVERDICT: FAIL" : "VERDICT: PASS");
+  b.runners.release(engineer, DEFAULT_REPLIES.engineer(first as Call) as string);
+  await untilEnded(b, id);
+  const engineerRuns = b.runners.calls.filter((c) => c.role === "engineer").map((c) => [c.model, c.effort]);
+  assert.deepEqual(engineerRuns, [["opus", "high"], ["sonnet", null]], "rework attempt uses the new setting");
+  assert.ok(b.runners.calls.filter((c) => c.role === "qa").every((c) => c.model === "sonnet" && c.effort === "medium"));
 });
 
 await check("submit refuses an empty or too long title", async () => {

@@ -1,5 +1,5 @@
 [
-  { "type": "system", "subtype": "init", "session_id": "sess-1", "apiKeySource": "none", "cwd": "D:\\agent-sandbox", "tools": ["Read"], "model": "sonnet", "permissionMode": "default" },
+  { "type": "system", "subtype": "init", "session_id": "sess-1", "apiKeySource": "none", "cwd": "D:\\agent-sandbox", "tools": ["Read"], "model": "claude-sonnet-5-5", "permissionMode": "default" },
   { "type": "stream_event", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "u1", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "Let me " } } },
   { "type": "stream_event", "parent_tool_use_id": null, "session_id": "sess-1", "uuid": "u2", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "look." } } },
   { "type": "stream_event", "parent_tool_use_id": "toolu_sub", "session_id": "sess-1", "uuid": "u3", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "subagent text" } } },

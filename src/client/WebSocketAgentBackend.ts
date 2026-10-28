@@ -263,6 +263,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   setChatOnly(args: CommandArgsMap["setChatOnly"]) {
     return this.run("setChatOnly", args);
   }
+  setAgentModel(args: CommandArgsMap["setAgentModel"]) {
+    return this.run("setAgentModel", args);
+  }
   submitTask(args: CommandArgsMap["submitTask"]) {
     return this.run("submitTask", args);
   }

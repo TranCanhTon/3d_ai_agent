@@ -16,6 +16,8 @@ export type TranslatorAction =
   | { type: "toolStarted"; toolUseId: string; toolName: string; summary: string }
   | { type: "toolFinished"; toolUseId: string; toolName: string; ok: boolean }
   | { type: "session"; id: string }
+  /** The model the run uses (full id, from the init message). */
+  | { type: "model"; model: string }
   /** Where Claude Code got its credential ("none" = claude.ai subscription login). */
   | { type: "auth"; source: string }
   /** The subscription usage limit was hit; resetsAt in epoch ms when known. */
@@ -76,6 +78,16 @@ export function classifyErrorText(text: string): { kind: ResultErrorKind; line: 
   return { kind: "execution", line: firstLine.length > 300 ? `${firstLine.slice(0, 299)}…` : firstLine };
 }
 
+/**
+ * The effort Claude Code actually applied, from a hook input (after any silent downgrade for
+ * the model or the plan). Init messages of SDK runs do not carry it. null when absent: a model
+ * without effort support, or a hook that fires outside a turn.
+ */
+export function readHookEffort(hookInput: unknown): string | null {
+  const effort = obj(obj(hookInput)?.effort);
+  return typeof effort?.level === "string" && effort.level !== "" ? effort.level : null;
+}
+
 export function translate(message: SDKMessage, ctx: TranslateContext): TranslatorAction[] {
   const m = message as unknown as Json;
   switch (m.type) {
@@ -84,6 +96,7 @@ export function translate(message: SDKMessage, ctx: TranslateContext): Translato
       const actions: TranslatorAction[] = [];
       if (typeof m.session_id === "string") actions.push({ type: "session", id: m.session_id });
       if (typeof m.apiKeySource === "string") actions.push({ type: "auth", source: m.apiKeySource });
+      if (typeof m.model === "string" && m.model !== "") actions.push({ type: "model", model: m.model });
       return actions;
     }
 

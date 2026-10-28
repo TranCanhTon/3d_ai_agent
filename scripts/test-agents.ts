@@ -9,7 +9,7 @@ import type { AgentRunCallbacks, ToolEvent } from "../server/agents/AgentRunner.
 import { assertSubscriptionBilling, BillingGuardError, buildAgentEnv, ClaudeRunner } from "../server/agents/claude/ClaudeRunner.ts";
 import { addNoteTool } from "../server/agents/claude/notesTool.ts";
 import { describeTool } from "../server/agents/claude/toolSummary.ts";
-import { NOT_LOGGED_IN, translate, type TranslatorAction } from "../server/agents/claude/translate.ts";
+import { NOT_LOGGED_IN, readHookEffort, translate, type TranslatorAction } from "../server/agents/claude/translate.ts";
 import { buildRolePrompt, CHAT_ONLY_LINE, NO_NOTES_LINE, notesSection } from "../server/roles/rolePrompts.ts";
 import { appendNoteLine, ensureNotesFile } from "../server/projects/notes.ts";
 import { AGENT_ROLES, ROLE_DEFINITIONS } from "../src/shared/domain/roles.ts";
@@ -59,11 +59,25 @@ const fixture = loadFixture("sdk-handwritten.json");
 const at = (i: number) => fixture[i] as SDKMessage;
 const one = (m: SDKMessage) => translate(m, { rootPath: ROOT, toolNames: new Map(), maxTurns: 15 });
 
-await check("init emits the session id and auth source, no status", () => {
+await check("init emits the session id, auth source and the model that runs, no status", () => {
   assert.deepEqual(one(at(0)), [
     { type: "session", id: "sess-1" },
     { type: "auth", source: "none" },
+    { type: "model", model: "claude-sonnet-5-5" },
   ]);
+});
+
+await check("a recorded init reports the full model id", () => {
+  const recorded = readFileSync(join(process.cwd(), "scripts", "fixtures", "sdk-recorded-drater.jsonl"), "utf8").split("\n")[0] ?? "";
+  const actions = one(JSON.parse(recorded) as SDKMessage);
+  assert.deepEqual(actions.find((a) => a.type === "model"), { type: "model", model: "claude-sonnet-5-5" });
+});
+
+await check("readHookEffort reads the applied effort from a hook input, null when absent", () => {
+  assert.equal(readHookEffort({ hook_event_name: "Stop", effort: { level: "medium" } }), "medium");
+  assert.equal(readHookEffort({ hook_event_name: "Stop" }), null);
+  assert.equal(readHookEffort({ hook_event_name: "Stop", effort: { level: "" } }), null);
+  assert.equal(readHookEffort(null), null);
 });
 
 await check("text deltas: communicating 'Typing...' + delta; subagent deltas ignored", () => {
@@ -337,6 +351,7 @@ function recordingCallbacks() {
     onTool: (e) => tools.push(e),
     onAuth: (s) => log.push(`auth:${s}`),
     onUsageLimit: (r) => log.push(`limit:${r}`),
+    onRunInfo: (i) => log.push(`ran:${i.model}/${i.effort ?? "-"}`),
     addNote: (text) => {
       log.push(`note:${text}`);
       return `- ${text} (STD Dren, 2026-01-01)`;
@@ -358,14 +373,15 @@ await check("passes safe SDK options and maps a run to callbacks, recording ever
   const messages = [at(0), at(1), at(2), at(4), at(5), at(6)];
   const runner = new ClaudeRunner(runnerOptions({ PATH: "p" }, fakeQuery(messages, captured)));
   const { log, tools, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "hi", sessionId: "prev-session", cwd: ROOT, chatOnly: false }, callbacks);
+  runner.run({ agentId: engineer, text: "hi", sessionId: "prev-session", cwd: ROOT, chatOnly: false, model: "opus", effort: "high" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("complete:")));
 
   const o = captured.options;
   assert.ok(o !== null);
   assert.equal(o.cwd, ROOT);
   assert.equal(o.resume, "prev-session");
-  assert.equal(o.model, CONFIG.defaultModel);
+  assert.equal(o.model, "opus", "the run input's model, not a role constant");
+  assert.equal(o.effort, "high");
   assert.equal(o.maxTurns, 30);
   assert.equal(o.includePartialMessages, true);
   assert.equal(o.permissionMode, "default");
@@ -390,6 +406,7 @@ await check("passes safe SDK options and maps a run to callbacks, recording ever
 
   assert.ok(log.includes("session:sess-1"));
   assert.ok(log.includes("auth:none"));
+  assert.ok(log.includes("ran:claude-sonnet-5-5/-"), "init reports the model; no hook ran yet, so no effort");
   assert.ok(log.includes("delta:Let me ") && log.includes("delta:look."));
   assert.ok(log.includes("usage:123/45"));
   assert.ok(log.includes("complete:All done."));
@@ -410,7 +427,7 @@ await check("PreToolUse hook applies our rules to every call: deny, ask (→ can
   const captured: Captured = { options: null };
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(6)], captured)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false, model: "sonnet", effort: "medium" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("complete:")));
   const hook = captured.options?.hooks?.PreToolUse?.[0]?.hooks[0];
   assert.ok(hook !== undefined);
@@ -433,12 +450,37 @@ await check("PreToolUse hook applies our rules to every call: deny, ask (→ can
   assert.equal(await decision("Read", { file_path: "a" }), "none");
 });
 
+await check("effort: sent when set, no effort key when null; hooks report the applied (downgraded) effort", async () => {
+  const captured: Captured = { options: null };
+  const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(6)], captured, true)));
+  const { log, callbacks } = recordingCallbacks();
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false, model: "haiku", effort: null }, callbacks);
+  await waitFor(() => log.some((l) => l.startsWith("ran:")));
+  const o = captured.options;
+  assert.ok(o !== null);
+  assert.equal(o.model, "haiku");
+  assert.ok(!("effort" in o), "null effort sends no effort option");
+  const signal = { signal: new AbortController().signal };
+  const preToolUse = o.hooks?.PreToolUse?.[0]?.hooks[0];
+  const stop = o.hooks?.Stop?.[0]?.hooks[0];
+  assert.ok(preToolUse !== undefined && stop !== undefined);
+  await preToolUse(
+    { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "a" }, tool_use_id: "t", session_id: "s", transcript_path: "", cwd: ROOT, effort: { level: "medium" } } as HookInput,
+    "t",
+    signal,
+  );
+  assert.ok(log.includes("ran:claude-sonnet-5-5/medium"), log.join(" | "));
+  assert.deepEqual(await stop({ hook_event_name: "Stop", session_id: "s", transcript_path: "", cwd: ROOT, stop_hook_active: false, effort: { level: "low" } } as HookInput, undefined, signal), {});
+  assert.ok(log.includes("ran:claude-sonnet-5-5/low"), "the Stop hook reports it too (runs without tool calls)");
+  runner.stop();
+});
+
 await check("API key billing reported at init aborts the run with an error", async () => {
   const captured: Captured = { options: null };
   const init = { ...(at(0) as object), apiKeySource: "ANTHROPIC_API_KEY" } as SDKMessage;
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([init, at(1), at(6)], captured, true)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false, model: "sonnet", effort: "medium" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("error:")));
   await flush();
   assert.ok(captured.options?.abortController?.signal.aborted, "aborted");
@@ -451,7 +493,7 @@ await check("usage limit: onUsageLimit with the reset time and a 'resets at HH:M
   const limitResult = { ...(at(9) as object), result: "Claude AI usage limit reached" } as SDKMessage;
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(10), limitResult], captured)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false, model: "sonnet", effort: "medium" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("error:")));
   assert.ok(log.includes(`limit:${1793030400 * 1000}`));
   assert.ok(log.some((l) => /^error:Usage limit, resets at \d\d:\d\d$/.test(l)), log.join(" | "));
@@ -463,7 +505,7 @@ await check("stop() aborts the query, drops later callbacks and denies pending p
   const options = { ...runnerOptions({}, fakeQuery([at(0), at(1)], captured, true)), broker };
   const runner = new ClaudeRunner(options);
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: false, model: "sonnet", effort: "medium" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("delta:")));
   const pending = broker.decide(engineer, "Write", { file_path: "a" });
   await flush();
@@ -480,7 +522,7 @@ await check("chat only: no tools, no tool server, the chat only line, and the ho
   const captured: Captured = { options: null };
   const runner = new ClaudeRunner(runnerOptions({}, fakeQuery([at(0), at(6)], captured)));
   const { log, callbacks } = recordingCallbacks();
-  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: true }, callbacks);
+  runner.run({ agentId: engineer, text: "x", sessionId: null, cwd: ROOT, chatOnly: true, model: "sonnet", effort: "medium" }, callbacks);
   await waitFor(() => log.some((l) => l.startsWith("complete:")));
   const o = captured.options;
   assert.ok(o !== null);
