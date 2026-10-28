@@ -90,7 +90,7 @@ export interface Task {
   sessions: Partial<Record<AgentRole, string>>;
   /** Latest reply text per role in this task. */
   outputs: Partial<Record<AgentRole, string>>;
-  /** sONion Ring's question to me while the task waits for my answer. */
+  /** A step's question to me while the task waits for my answer; asked by the step's agent (assignedAgentId). */
   question: string | null;
   endReason: TaskEndReason | null;
   /** The SUMMARY line written to the task log; for a failed task, why it failed. */

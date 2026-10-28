@@ -19,6 +19,8 @@ import { ADD_NOTE_SDK_NAME, AGENT_ROLES, builtInToolsFor, canonicalToolName, ROL
 import type { Task, WorkflowSignal } from "../src/shared/domain/taskTypes.ts";
 import { applySignal, blockTask, canTransition, createTask, isTerminal, unblockTask } from "../src/shared/domain/workflow.ts";
 import {
+  answerHandoff,
+  ASK_LINE,
   bulletItems,
   continueText,
   implementationHandoff,
@@ -400,7 +402,7 @@ check("handoffs carry what the next agent needs and the required ending", () => 
   assert.ok(intake.includes("Priority: high") && intake.includes("Description:\nAll pages") && intake.includes("QUESTION:"));
   assert.ok(planningHandoff(team, darkMode, "Make it dark").includes("BRIEF:\nMake it dark"));
   const research = researchHandoff(team, darkMode, "b", "1. x", "- Which icon set?");
-  assert.ok(research.includes("PLAN:\n1. x") && research.includes("RESEARCH QUESTIONS:\n- Which icon set?") && research.endsWith("End with FINDINGS:."));
+  assert.ok(research.includes("PLAN:\n1. x") && research.includes("RESEARCH QUESTIONS:\n- Which icon set?") && research.includes("End with FINDINGS:."));
   assert.ok(implementationHandoff(team, darkMode, "b", "p", null).includes("FINDINGS:\nnone (no research needed)"));
   const rework = reworkHandoff(team, darkMode, 2, "qa", "npm test failed\nVERDICT: FAIL");
   assert.ok(rework.includes("QA failed. Report:\nnpm test failed") && rework.includes("Do not commit or push"));
@@ -409,6 +411,33 @@ check("handoffs carry what the next agent needs and the required ending", () => 
   assert.ok(summaryHandoff(team, darkMode, 2, "- a.ts", "PASS", "APPROVED").includes("after 2 attempts. QA: PASS. Review: APPROVED."));
   assert.equal(continueText("testing"), "Continue where you left off. Finish with the required ending: VERDICT: PASS or VERDICT: FAIL.");
   assert.ok(reminderText("planning").endsWith("PLAN: and RESEARCH QUESTIONS:"));
+});
+
+check("every handoff but the summary says the agent may ask me; my answer names the step's ending", () => {
+  const asking = [
+    planningHandoff(team, darkMode, "b"),
+    researchHandoff(team, darkMode, "b", "p", "- q"),
+    implementationHandoff(team, darkMode, "b", "p", null),
+    reworkHandoff(team, darkMode, 2, "qa", "r"),
+    testingHandoff(team, darkMode, 1, "p", "c", "t"),
+    reviewHandoff(team, darkMode, 1, "b", "p", "c"),
+  ];
+  for (const text of asking) assert.ok(text.endsWith(ASK_LINE), text.split("\n")[0]);
+  assert.ok(!summaryHandoff(team, darkMode, 1, "c", "PASS", "APPROVED").includes("QUESTION:"));
+  const answer = answerHandoff(darkMode, "implementation", "Use a toggle in the header");
+  assert.ok(answer.includes("Answer to your question:\nUse a toggle in the header") && answer.endsWith("end with CHANGES: and HOW TO TEST:."));
+});
+
+check("any step but the summary may ask: QUESTION after the ending (or without it) wins, once", () => {
+  assert.deepEqual(readStepResult("implementation", "I need to know one thing.\nQUESTION:\nToggle in the header or in settings?"), {
+    kind: "question",
+    question: "Toggle in the header or in settings?",
+  });
+  assert.equal(readStepResult("planning", "QUESTION:\nOne page or all?\nPLAN:\n1. x\nRESEARCH QUESTIONS:\nnone").kind, "plan", "ending after the question wins");
+  assert.equal(readStepResult("testing", "VERDICT: PASS\nQUESTION:\nShould empty input be allowed?").kind, "question");
+  assert.equal(readStepResult("review", "QUESTION:\nKeep the old API?\nVERDICT: APPROVED").kind, "review");
+  assert.equal(readStepResult("research", "QUESTION:\nWhich browser?", false).kind, "missing", "no second question in the same step");
+  assert.equal(readStepResult("summary", "QUESTION:\nAnything else?").kind, "missing", "the summary only reports");
 });
 
 // ── 4. Queue ────────────────────────────────────────────────────────────────

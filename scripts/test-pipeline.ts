@@ -401,6 +401,26 @@ await check("6. sONion asks a QUESTION → paused, answerTask → brief → cont
   assert.throws(() => b.pipeline.answer(id, "again"), /already ended/);
 });
 
+await check("6b. STD Dren asks mid-implementation → paused on him → my answer goes to his session → he finishes", async () => {
+  const b = fresh({
+    engineer: (c) => (c.n === 1 ? "Before I build it:\nQUESTION:\nToggle in the header or in settings?" : c.n === 2 ? "QUESTION:\nAnd which colour?" : DEFAULT_REPLIES.engineer(c)),
+  });
+  const id = submit(b);
+  const paused = await untilPaused(b, id, PAUSE.question);
+  assert.equal(paused.question, "Toggle in the header or in settings?");
+  assert.equal(paused.assignedAgentId, agentOf(b, "engineer"), "the task waits on the agent that asked");
+  assert.ok(b.events.some((e) => e.type === "agent.waiting_user" && e.agentId === agentOf(b, "engineer") && e.message.startsWith("STD Dren asks:")));
+  assert.throws(() => b.pipeline.resume(id), /STD Dren's question instead/);
+  b.pipeline.answer(id, "In the header");
+  // His second reply asks again: one question per step, so it counts as a missing ending (reminder, then his normal reply).
+  await untilEnded(b, id);
+  const engineerCalls = b.runners.calls.filter((c) => c.role === "engineer");
+  assert.ok(engineerCalls[1]?.text.includes("Answer to your question:\nIn the header") && engineerCalls[1]?.text.endsWith("end with CHANGES: and HOW TO TEST:."));
+  assert.equal(engineerCalls[1]?.sessionId, task(b, id).sessions.engineer, "same task session");
+  assert.ok(engineerCalls[2]?.text.startsWith("Your reply did not end"), "the second question was not taken");
+  assert.equal(task(b, id).endReason, "done");
+});
+
 await check("7. missing VERDICT → one reminder → still missing → paused; Resume continues", async () => {
   const b = fresh({ qa: () => "Everything looks fine to me." });
   const id = submit(b);

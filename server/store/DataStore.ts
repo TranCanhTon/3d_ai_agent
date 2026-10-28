@@ -64,7 +64,7 @@ export interface SavedTask {
   started: boolean;
   /** The one reminder for a missing ending was sent in this step. */
   reminderSent: boolean;
-  /** I answered sONion Ring's question; no second question. */
+  /** I answered this step's question; the step may not ask a second one. */
   questionAnswered: boolean;
   /** The step's full handoff, resent by Resume when its agent has not seen it. */
   handoff: SavedHandoff | null;

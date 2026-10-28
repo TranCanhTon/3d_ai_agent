@@ -124,7 +124,7 @@ export class Pipeline implements TaskHooks {
     const record = this.get(taskId);
     const { task } = record;
     if (task.endReason !== null) throw new Error("Task has already ended");
-    if (task.question !== null) throw new Error(`Answer ${this.names(task.projectId).orchestrator}'s question instead`);
+    if (task.question !== null) throw new Error(`Answer ${this.askerName(record)}'s question instead`);
     if (record.inputId !== null) {
       throw new Error(task.blockedReason === PAUSE.permission ? "Task is waiting for your OK on a permission card" : "Task is not paused");
     }
@@ -141,25 +141,28 @@ export class Pipeline implements TaskHooks {
     }
   }
 
-  /** My answer to sONion Ring's question; he writes the brief in his task session. */
+  /** My answer to a step's question; the agent that asked goes on in its task session. */
   answer(taskId: string, text: string): void {
     const record = this.get(taskId);
     const { task } = record;
     if (task.endReason !== null) throw new Error("Task has already ended");
-    if (task.question === null) throw new Error("Task has no question to answer");
+    if (task.question === null || record.step === null) throw new Error("Task has no question to answer");
     if (this.deps.world.getProject(task.projectId).archived) throw new Error("Project is archived");
 
+    const step = record.step;
     record.task = { ...unblockTask(task, this.deps.world.now()), question: null };
-    record.questionAnswered = true;
     this.emitTask("task.resumed", record, `You answered: ${firstLine(text)}`);
     const handoff: SavedHandoff = {
-      text: answerHandoff(task, text),
+      text: answerHandoff(task, step, text),
       fromAgentId: null,
       author: { kind: "user" },
       activity: "Reading your answer",
       linkKind: "assign",
     };
-    this.startStep(record, "intake", handoff, true);
+    this.startStep(record, step, handoff, true);
+    // One question per step: the same step may not ask again.
+    record.questionAnswered = true;
+    this.put(record);
   }
 
   /** Stops the running step, removes the task's waiting inputs and ends it as cancelled. */
@@ -272,9 +275,9 @@ export class Pipeline implements TaskHooks {
         this.deps.world.emit({
           type: "agent.waiting_user",
           projectId: task.projectId,
-          agentId: id("orchestrator"),
+          agentId: id(STEP_ROLE[step]),
           taskId: task.id,
-          message: `${names.orchestrator} asks: ${firstLine(result.question)}`,
+          message: `${names[STEP_ROLE[step]]} asks: ${firstLine(result.question)}`,
           severity: "warning",
         });
         this.pause(record, PAUSE.question);
@@ -401,6 +404,7 @@ export class Pipeline implements TaskHooks {
     record.handoff = handoff;
     record.reminderSent = false;
     record.started = false;
+    record.questionAnswered = false;
     record.task = { ...record.task, assignedAgentId: makeAgentId(record.task.projectId, STEP_ROLE[step]) };
     if (!force && this.deps.world.usage.limited) {
       this.pause(record, this.usageReason());
@@ -545,6 +549,11 @@ export class Pipeline implements TaskHooks {
   /** A marker's section in a role's latest reply of this task. */
   private section(record: SavedTask, role: AgentRole, marker: Marker): string {
     return parseReply(record.task.outputs[role] ?? "").sections[marker] ?? "";
+  }
+
+  /** The agent whose step asked the open question. */
+  private askerName(record: SavedTask): string {
+    return this.names(record.task.projectId)[STEP_ROLE[record.step ?? "intake"]];
   }
 
   private names(projectId: string): TeamNames {

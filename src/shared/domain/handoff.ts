@@ -156,19 +156,40 @@ export type StepResult =
 
 const missing = (marker: string): StepResult => ({ kind: "missing", marker });
 
-/** Reads a step's final reply. `questionAllowed` is false once I answered sONion Ring's question. */
+/** The markers that finish each step; a QUESTION: after them (or without them) is a question to me. */
+const STEP_MARKERS: Record<PipelineStep, Marker[]> = {
+  intake: ["BRIEF"],
+  planning: ["PLAN", "RESEARCH QUESTIONS"],
+  research: ["FINDINGS"],
+  implementation: ["CHANGES", "HOW TO TEST"],
+  testing: ["VERDICT"],
+  review: ["VERDICT"],
+  summary: ["SUMMARY"],
+};
+
+/** Steps whose agent may stop and ask me something (the summary only reports). */
+export function canAsk(step: PipelineStep): boolean {
+  return step !== "summary";
+}
+
+/**
+ * Reads a step's final reply. Any step but the summary may end with QUESTION:
+ * instead of its ending, whichever comes last. `questionAllowed` is false once I
+ * answered a question in this step (one question per step, so it cannot loop).
+ */
 export function readStepResult(step: PipelineStep, text: string, questionAllowed = true): StepResult {
   const { sections, values, lines } = parseReply(text);
   const has = (marker: Marker) => sections[marker] !== undefined && sections[marker] !== "";
 
+  if (questionAllowed && canAsk(step) && has("QUESTION")) {
+    // A verdict sits on its marker line, so its section may be empty.
+    const endingLine = Math.max(-1, ...STEP_MARKERS[step].map((marker) => (marker === "VERDICT" || has(marker) ? (lines[marker] ?? -1) : -1)));
+    if ((lines.QUESTION ?? -1) > endingLine) return { kind: "question", question: sections.QUESTION ?? "" };
+  }
+
   switch (step) {
-    case "intake": {
-      const briefLine = has("BRIEF") ? (lines.BRIEF ?? -1) : -1;
-      const questionLine = questionAllowed && has("QUESTION") ? (lines.QUESTION ?? -1) : -1;
-      if (questionLine > briefLine) return { kind: "question", question: sections.QUESTION ?? "" };
-      if (briefLine >= 0) return { kind: "brief", brief: sections.BRIEF ?? "" };
-      return missing("BRIEF:");
-    }
+    case "intake":
+      return has("BRIEF") ? { kind: "brief", brief: sections.BRIEF ?? "" } : missing("BRIEF:");
     case "planning": {
       if (!has("PLAN")) return missing("PLAN:");
       if (sections["RESEARCH QUESTIONS"] === undefined) return missing("RESEARCH QUESTIONS:");
@@ -218,6 +239,10 @@ function header(from: string, task: Pick<Task, "title">, attempt?: number): stri
   return `From ${from}, task "${task.title}"${attempt === undefined ? "" : ` (attempt ${attempt})`}:`;
 }
 
+/** Added to every handoff after intake (which says it in its own words) except the summary. */
+export const ASK_LINE =
+  "If you cannot go on without a decision from the user (what they want, or a design choice), ask them one question instead and end with QUESTION:.";
+
 function block(marker: string, content: string): string {
   return `${marker}\n${content.trim() === "" ? "(empty)" : content.trim()}`;
 }
@@ -231,8 +256,9 @@ export function intakeHandoff(task: Pick<Task, "title" | "description" | "priori
   ].join("\n\n");
 }
 
-export function answerHandoff(task: Pick<Task, "title">, answer: string): string {
-  return [header("you", task), block("Answer to your question:", answer), "Now write the brief and end with BRIEF:."].join("\n\n");
+/** My answer, back to the agent that asked, in its task session. */
+export function answerHandoff(task: Pick<Task, "title">, step: PipelineStep, answer: string): string {
+  return [header("you", task), block("Answer to your question:", answer), `Now go on with your step and end with ${STEP_ENDING[step]}.`].join("\n\n");
 }
 
 export function planningHandoff(names: TeamNames, task: Pick<Task, "title" | "description">, brief: string): string {
@@ -241,6 +267,7 @@ export function planningHandoff(names: TeamNames, task: Pick<Task, "title" | "de
     block("BRIEF:", brief),
     block("Task description:", task.description === "" ? "(no description)" : task.description),
     'Make the plan. End with PLAN: and RESEARCH QUESTIONS: (write "none" when there are none).',
+    ASK_LINE,
   ].join("\n\n");
 }
 
@@ -251,6 +278,7 @@ export function researchHandoff(names: TeamNames, task: Pick<Task, "title">, bri
     block("PLAN:", plan),
     block("RESEARCH QUESTIONS:", questions),
     "Answer the research questions. End with FINDINGS:.",
+    ASK_LINE,
   ].join("\n\n");
 }
 
@@ -268,6 +296,7 @@ export function implementationHandoff(
     block("PLAN:", plan),
     block("FINDINGS:", findings ?? "none (no research needed)"),
     "Implement the plan. Do not commit or push. End with CHANGES: and HOW TO TEST:.",
+    ASK_LINE,
   ].join("\n\n");
 }
 
@@ -285,6 +314,7 @@ export function reworkHandoff(
     header(from, task, attempt),
     block(`${what}. Report:`, feedback),
     "Fix exactly what was reported, then check nothing else broke. Do not commit or push. End with CHANGES: and HOW TO TEST:.",
+    ASK_LINE,
   ].join("\n\n");
 }
 
@@ -295,6 +325,7 @@ export function testingHandoff(names: TeamNames, task: Pick<Task, "title">, atte
     block("CHANGES:", changes),
     block("HOW TO TEST:", howToTest),
     "Test the changes. Your last line must be VERDICT: PASS or VERDICT: FAIL.",
+    ASK_LINE,
   ].join("\n\n");
 }
 
@@ -306,6 +337,7 @@ export function reviewHandoff(names: TeamNames, task: Pick<Task, "title">, attem
     block("PLAN:", plan),
     block("CHANGES:", changes),
     "Review the changes with git diff. Your last line must be VERDICT: APPROVED or VERDICT: CHANGES.",
+    ASK_LINE,
   ].join("\n\n");
 }
 
