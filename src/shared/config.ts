@@ -284,7 +284,8 @@ export const CONFIG: AppConfig = {
   resultHoldMs: 800,
   sandboxProjectId: "proj_sandbox",
   echo: { thinkMs: 600, wordMs: 60 },
-  scripted: { thinkMs: 900, wordMs: 35, toolMs: 500 },
+  // Slow enough that a robot can cross the office (5–8 s) before the next step starts.
+  scripted: { thinkMs: 4000, wordMs: 35, toolMs: 1500 },
   scriptedDataDir: "./.tmp/scripted-data",
   scriptedSandboxRoot: "D:\\agent-sandbox-scripted",
 
