@@ -93,7 +93,7 @@ export interface Task {
   /** sONion Ring's question to me while the task waits for my answer. */
   question: string | null;
   endReason: TaskEndReason | null;
-  /** The SUMMARY line written to the task log. */
+  /** The SUMMARY line written to the task log; for a failed task, why it failed. */
   summary: string | null;
 }
 

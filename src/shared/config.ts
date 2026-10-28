@@ -122,6 +122,8 @@ export interface AppConfig {
   scripted: { thinkMs: number; wordMs: number; toolMs: number };
   /** The scripted runner's own data folder, so fake replies never mix with real chats and tasks. */
   scriptedDataDir: string;
+  /** The scripted runner's Sandbox folder (its task log lines land in this folder's notes, not the real Sandbox). */
+  scriptedSandboxRoot: string;
 
   // ── Browser client ──
   commandTimeoutMs: number;
@@ -241,6 +243,7 @@ export const CONFIG: AppConfig = {
   echo: { thinkMs: 600, wordMs: 60 },
   scripted: { thinkMs: 900, wordMs: 35, toolMs: 500 },
   scriptedDataDir: "./.tmp/scripted-data",
+  scriptedSandboxRoot: "D:\\agent-sandbox-scripted",
 
   commandTimeoutMs: 10_000,
   reconnectBackoffMs: [500, 1000, 2000, 5000],

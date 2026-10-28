@@ -376,6 +376,7 @@ await check("5. third failed attempt → task failed, task log 'failed' line, ne
   assert.equal(failed.iteration, CONFIG.maxIterations);
   assert.equal(b.runners.calls.filter((c) => c.role === "engineer" && c.text.includes('task "First"')).length, CONFIG.maxIterations);
   assert.ok(readNotes(b.root).includes(`- Task "First" failed: QA failed after 3 attempts (task log, ${today})`), readNotes(b.root));
+  assert.equal(failed.summary, "QA failed after 3 attempts", "a failed task keeps why it failed");
   assert.equal(b.events.find((e) => e.type === "task.failed")?.severity, "error");
   await untilEnded(b, second);
   assert.equal(task(b, second).endReason, "done");

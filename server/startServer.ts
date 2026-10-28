@@ -195,7 +195,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
 
   // First start: the Sandbox becomes a normal saved project.
   if (world.projects.size === 0) {
-    const sandboxRoot = resolve(options.sandboxRoot ?? CONFIG.sandboxRoot);
+    const sandboxRoot = resolve(options.sandboxRoot ?? (runnerKind === "scripted" ? CONFIG.scriptedSandboxRoot : CONFIG.sandboxRoot));
     ensureSandbox(sandboxRoot, appRoot);
     projects.createProject({ name: "Sandbox", rootPath: sandboxRoot, initGit: true }, CONFIG.sandboxProjectId);
   }

@@ -477,7 +477,8 @@ export class Pipeline implements TaskHooks {
       const result = applySignal(task, reason === "done" ? "approved" : "abort", now, WORKFLOW);
       if (result.ok) task = result.task;
     }
-    record.task = { ...task, endReason: reason, assignedAgentId: null, question: null };
+    // A failed task keeps its reason (the text of its task log line) where a done one keeps its summary.
+    record.task = { ...task, endReason: reason, assignedAgentId: null, question: null, ...(reason === "failed" ? { summary: detail } : {}) };
     record.step = null;
     record.inputId = null;
     record.handoff = null;
