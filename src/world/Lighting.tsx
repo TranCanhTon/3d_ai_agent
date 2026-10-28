@@ -4,9 +4,9 @@
 // hemisphere fill, warm point lights over the desk clusters and the hub, and
 // (high quality only) a procedural environment for reflections.
 
-import { Environment, Lightformer } from "@react-three/drei";
-import { useLayoutEffect, useRef } from "react";
-import type * as THREE from "three";
+import { useThree } from "@react-three/fiber";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import * as THREE from "three";
 import { CONFIG } from "@/shared/config.ts";
 import { HUB_CENTER, STATIONS } from "@/shared/domain/worldLayout.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
@@ -22,10 +22,58 @@ const WARM_LIGHTS: { position: [number, number, number]; intensity: number; dist
   { position: [STATIONS.lounge.center.x, 2.6, STATIONS.lounge.center.z], intensity: 9, distance: 7.5 },
 ];
 
+/** Light panels for reflections: a warm one overhead, a cool one and a warm band at the window side. */
+const LIGHT_PANELS: { color: string; intensity: number; position: [number, number, number]; rotationX: number; size: [number, number] }[] = [
+  { color: "#ffd2a1", intensity: 2.2, position: [0, 6, 1], rotationX: Math.PI / 2, size: [18, 10] },
+  { color: "#7f9de0", intensity: 1.6, position: [0, 2.5, -12], rotationX: 0, size: [30, 5] },
+  { color: "#c9774f", intensity: 0.6, position: [0, 0.8, -12], rotationX: 0, size: [30, 1.2] },
+];
+const ENVIRONMENT_INTENSITY = 0.45;
+
+let environment: THREE.Texture | null = null;
+
+/**
+ * The reflection map, prefiltered once and kept for the page's life. Building it
+ * here rather than mounting drei's Environment per quality switch matters: the
+ * renderer keeps a prefiltered copy of a mounted environment that is never freed.
+ */
+function officeEnvironment(gl: THREE.WebGLRenderer): THREE.Texture {
+  if (environment !== null) return environment;
+  const scene = new THREE.Scene();
+  const geometry = new THREE.PlaneGeometry(1, 1);
+  const materials: THREE.Material[] = [];
+  for (const panel of LIGHT_PANELS) {
+    const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(panel.color).multiplyScalar(panel.intensity), side: THREE.DoubleSide, toneMapped: false });
+    materials.push(material);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...panel.position);
+    mesh.rotation.x = panel.rotationX;
+    mesh.scale.set(panel.size[0], panel.size[1], 1);
+    scene.add(mesh);
+  }
+  const generator = new THREE.PMREMGenerator(gl);
+  environment = generator.fromScene(scene, 0, 0.1, 100).texture;
+  generator.dispose();
+  geometry.dispose();
+  for (const material of materials) material.dispose();
+  return environment;
+}
+
 export function Lighting() {
   const quality = useWorldStore((s) => s.quality);
   const high = quality === "high";
   const moon = useRef<THREE.DirectionalLight>(null);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+
+  // Reflections in high quality only.
+  useEffect(() => {
+    scene.environment = high ? officeEnvironment(gl) : null;
+    scene.environmentIntensity = ENVIRONMENT_INTENSITY;
+    return () => {
+      scene.environment = null;
+    };
+  }, [high, gl, scene]);
 
   useLayoutEffect(() => {
     const light = moon.current;
@@ -57,13 +105,6 @@ export function Lighting() {
       {WARM_LIGHTS.map((light) => (
         <pointLight key={light.position.join(",")} color={WARM} position={light.position} intensity={light.intensity} distance={light.distance} decay={1.6} />
       ))}
-      {high && (
-        <Environment resolution={256} frames={1} environmentIntensity={0.45}>
-          <Lightformer form="rect" intensity={2.2} color="#ffd2a1" position={[0, 6, 1]} rotation-x={Math.PI / 2} scale={[18, 10, 1]} />
-          <Lightformer form="rect" intensity={1.6} color="#7f9de0" position={[0, 2.5, -12]} scale={[30, 5, 1]} />
-          <Lightformer form="rect" intensity={0.6} color="#c9774f" position={[0, 0.8, -12]} scale={[30, 1.2, 1]} />
-        </Environment>
-      )}
     </>
   );
 }
