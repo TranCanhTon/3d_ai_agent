@@ -87,8 +87,8 @@ export function mergedParts(parts: { geometry: THREE.BufferGeometry; position?: 
   return merged;
 }
 
-export function roundedBox(width: number, height: number, depth: number, radius: number): THREE.BufferGeometry {
-  return new RoundedBoxGeometry(width, height, depth, 3, radius);
+export function roundedBox(width: number, height: number, depth: number, radius: number, segments = 3): THREE.BufferGeometry {
+  return new RoundedBoxGeometry(width, height, depth, segments, radius);
 }
 
 // ── Geometries ──────────────────────────────────────────────────────────────

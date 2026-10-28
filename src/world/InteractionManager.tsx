@@ -29,7 +29,7 @@ export function rememberPointerDown(event: { clientX: number; clientY: number })
   pointerDown.y = event.clientY;
 }
 
-function wasClick(event: { clientX: number; clientY: number }): boolean {
+export function wasClick(event: { clientX: number; clientY: number }): boolean {
   return Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) <= CONFIG.world.clickTolerancePx;
 }
 
@@ -37,6 +37,13 @@ function wasClick(event: { clientX: number; clientY: number }): boolean {
 export function handlePointerMissed(event: MouseEvent): void {
   if (event.type !== "click" || event.button !== 0 || !wasClick(event)) return;
   useWorldStore.getState().setDeskHighlight(null);
+}
+
+/** Robot hit capsules carry `userData.robotId`. */
+export const ROBOT_HIT_KEY = "robotId";
+
+function hitsRobot(event: ThreeEvent<PointerEvent | MouseEvent>): boolean {
+  return event.intersections.some((hit) => typeof hit.object.userData[ROBOT_HIT_KEY] === "string");
 }
 
 function selectStation(station: StationId): void {
@@ -62,6 +69,8 @@ function HitBox({ station }: { station: StationId }) {
   );
 
   const over = (event: ThreeEvent<PointerEvent>) => {
+    // A robot under the pointer (often sitting inside this box) takes the event.
+    if (hitsRobot(event)) return;
     event.stopPropagation();
     useWorldStore.getState().setHovered(`station:${station}`);
     gl.domElement.style.cursor = "pointer";
@@ -71,6 +80,7 @@ function HitBox({ station }: { station: StationId }) {
     gl.domElement.style.cursor = "";
   };
   const click = (event: ThreeEvent<MouseEvent>) => {
+    if (hitsRobot(event)) return;
     event.stopPropagation();
     if (event.button !== 0 || !wasClick(event.nativeEvent)) return;
     selectStation(station);

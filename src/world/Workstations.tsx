@@ -3,7 +3,8 @@
 // The furniture: desks with monitors and chairs, name plates, the hub console,
 // the wall screen, the planning board, the collaboration table and the lounge.
 // Repeated parts are instanced (one draw call per kind). Hover and the selected
-// desk brighten the monitors and name plates from useFrame, without React renders.
+// desk brighten the monitors and name plates from useFrame, without React renders;
+// a busy agent's monitors glow brighter and the hub ring pulses while sONion Ring works.
 
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
@@ -24,11 +25,14 @@ import {
 } from "@/shared/domain/worldLayout.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
 import { canvasTexture, geometry, makeCanvas, material, mergedParts, roundedBox, sharedGeometry, sharedMaterial, texture, uiFontFamily } from "./sharedResources.ts";
+import { AgentsLayer } from "./robots/AgentsLayer.tsx";
+import { CommArcs } from "./robots/CommArcs.tsx";
 import { StaticInstances, type Placement } from "./StaticInstances.tsx";
 
 const DESK_STATIONS = STATION_IDS.filter((id) => STATIONS[id].kind === "desk");
 const MONITOR = { width: 0.56, height: 0.34, screenWidth: 0.52, screenHeight: 0.3, y: 1.08, z: -0.2 };
-const SCREEN_LEVEL = { base: 0.6, selected: 0.72, hovered: 0.9 };
+/** Screen brightness: idle, while the agent works, and what hover or selection adds. */
+const SCREEN_LEVEL = { base: 0.6, busy: 1.4, selected: 0.12, hovered: 0.3 };
 const PLATE_LEVEL = { base: 0.82, hovered: 1 };
 const PLATE_TILT = -0.75;
 
@@ -125,8 +129,9 @@ function Desks() {
   const leg = useMemo(() => sharedGeometry("deskLeg", () => new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)), []);
   const screenGeometry = useMemo(() => sharedGeometry("screenPlane", () => new THREE.PlaneGeometry(MONITOR.screenWidth, MONITOR.screenHeight)), []);
 
-  // Brighten the hovered (and the selected) desk's screens; scroll the code.
-  const lastKey = useRef("");
+  // Screens glow while their agent works (damped over about half a second), a bit more when
+  // hovered or selected; the code scrolls.
+  const levels = useRef<number[]>(SCREEN_STATIONS.map(() => SCREEN_LEVEL.base));
   const color = useMemo(() => new THREE.Color(), []);
   useFrame((_, delta) => {
     const mesh = screens.current;
@@ -137,14 +142,20 @@ function Desks() {
     }
     const { hovered, deskHighlight } = useWorldStore.getState();
     const highlightStation = deskHighlight === null ? null : stationOfAgentId(deskHighlight);
-    const key = `${hovered}|${highlightStation}`;
-    if (key === lastKey.current) return;
-    lastKey.current = key;
+    const busy = busyStations();
+    let changed = false;
     SCREEN_STATIONS.forEach((station, index) => {
-      const level = hovered === `station:${station}` ? SCREEN_LEVEL.hovered : station === highlightStation ? SCREEN_LEVEL.selected : SCREEN_LEVEL.base;
-      mesh.setColorAt(index, color.setScalar(level));
+      const target =
+        (busy.has(station) ? SCREEN_LEVEL.busy : SCREEN_LEVEL.base) +
+        (hovered === `station:${station}` ? SCREEN_LEVEL.hovered : station === highlightStation ? SCREEN_LEVEL.selected : 0);
+      const current = levels.current[index]!;
+      if (Math.abs(current - target) < 0.002) return;
+      const next = THREE.MathUtils.damp(current, target, 6, Math.min(delta, 0.1));
+      levels.current[index] = Math.abs(next - target) < 0.002 ? target : next;
+      mesh.setColorAt(index, color.setScalar(levels.current[index]!));
+      changed = true;
     });
-    if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
+    if (changed && mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
   });
 
   return (
@@ -156,6 +167,16 @@ function Desks() {
       <StaticInstances placements={parts.screenList} geometry={screenGeometry} material={screenMaterial()} meshRef={screens} />
     </group>
   );
+}
+
+/** Home stations of the selected project's agents that are busy right now. */
+function busyStations(): Set<StationId> {
+  const { snapshot, selectedProjectId } = useWorldStore.getState();
+  const stations = new Set<StationId>();
+  for (const agent of snapshot?.agents ?? []) {
+    if (agent.projectId === selectedProjectId && agent.busy) stations.add(ROLE_DEFINITIONS[agent.role].homeStation);
+  }
+  return stations;
 }
 
 /** The station of an agent id (`${projectId}:${role}`). */
@@ -269,6 +290,8 @@ function NamePlates() {
 
 // ── Operations hub ──────────────────────────────────────────────────────────
 
+const HUB_RING = { idle: 0.9, busy: 1.7, pulse: 0.45 };
+
 function OperationsHub() {
   const reducedMotion = useWorldStore((s) => s.reducedMotion);
   const color = ROLE_DEFINITIONS.orchestrator.color;
@@ -287,8 +310,14 @@ function OperationsHub() {
   const ringMaterial = useMemo(() => sharedMaterial("hubRing", () => new THREE.MeshStandardMaterial({ color: "#000000", emissive: color, emissiveIntensity: 1.6, roughness: 0.4 })), [color]);
   const innerMaterial = useMemo(() => sharedMaterial("hubInner", () => new THREE.MeshStandardMaterial({ color: "#070b11", emissive: color, emissiveIntensity: 0.05, roughness: 0.3, metalness: 0.2, envMapIntensity: 0.3 })), [color]);
 
-  useFrame(({ clock }) => {
-    ringMaterial.emissiveIntensity = reducedMotion ? 1.6 : 1.45 + Math.sin(clock.elapsedTime * 1.4) * 0.35;
+  // The ring pulses while sONion Ring works, steady and dim otherwise (steady with reduced motion).
+  const level = useRef(HUB_RING.idle);
+  useFrame(({ clock }, delta) => {
+    const busy = busyStations().has("hub");
+    const target = busy ? HUB_RING.busy : HUB_RING.idle;
+    level.current = THREE.MathUtils.damp(level.current, target, 4, Math.min(delta, 0.1));
+    const pulse = busy && !reducedMotion ? Math.sin(clock.elapsedTime * 2.6) * HUB_RING.pulse : 0;
+    ringMaterial.emissiveIntensity = level.current + pulse;
   });
 
   return (
@@ -497,8 +526,8 @@ export function Workstations() {
       <PlanningBoard />
       <CollabTable />
       <Lounge />
-      {/* The robots go here. */}
-      <group name="AgentsLayer" />
+      <AgentsLayer />
+      <CommArcs />
     </group>
   );
 }

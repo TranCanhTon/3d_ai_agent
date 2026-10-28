@@ -9,6 +9,7 @@
 import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { openAgent } from "@/client/backendClient.ts";
 import { CONFIG } from "@/shared/config.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
 import { STATIONS } from "@/shared/domain/worldLayout.ts";
@@ -24,6 +25,20 @@ interface Pose {
 /** Wheel notches to zoom: one notch (100) is about 12%. */
 const ZOOM_PER_DELTA = 0.0012;
 const SETTLED = 0.001;
+
+/** An agent selected from the office itself (a robot click): the camera stays put. */
+let quietSelection: string | null = null;
+
+/** Selects the agent and opens its chat without moving the camera. */
+export function openAgentQuietly(agentId: string): void {
+  quietSelection = agentId;
+  try {
+    openAgent(agentId);
+    useWorldStore.getState().setDeskHighlight(agentId);
+  } finally {
+    quietSelection = null;
+  }
+}
 
 /** Focus the desk (or hub console) of an agent of the selected project; `keepZoom` only pans (Locate). */
 export function focusAgentDesk(agentId: string, keepZoom = false): void {
@@ -52,7 +67,8 @@ export function CameraController() {
   useEffect(
     () =>
       useWorldStore.subscribe((state, previous) => {
-        if (state.selectedAgentId !== null && state.selectedAgentId !== previous.selectedAgentId) focusAgentDesk(state.selectedAgentId);
+        if (state.selectedAgentId === null || state.selectedAgentId === previous.selectedAgentId || state.selectedAgentId === quietSelection) return;
+        focusAgentDesk(state.selectedAgentId);
       }),
     [],
   );

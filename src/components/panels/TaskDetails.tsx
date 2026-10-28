@@ -14,6 +14,7 @@ import { PAUSE, STEP_ROLE } from "@/shared/domain/handoff.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
 import type { Task } from "@/shared/domain/taskTypes.ts";
 import { STATIONS } from "@/shared/domain/worldLayout.ts";
+import { robotPositionNow } from "@/world/robots/robotFrame.ts";
 import { WORKFLOW_ROWS, workflowRowStates, type RowState, type WorkflowRow } from "@/shared/domain/workflow.ts";
 import { canChange, canResume, hasOpenAsk, shortTaskId, waitsForMe } from "@/shared/ui/present.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
@@ -267,8 +268,10 @@ export function TaskDetails({ task }: { task: Task }) {
 
   const locate = () => {
     if (working === null) return;
+    // Wherever the robot is now (its desk if the office has not placed it yet).
     const { center } = STATIONS[ROLE_DEFINITIONS[working.role].homeStation];
-    useWorldStore.getState().requestCamera({ pan: { x: center.x, y: 0, z: center.z } });
+    const at = robotPositionNow(working.id) ?? center;
+    useWorldStore.getState().requestCamera({ pan: { x: at.x, y: 0, z: at.z } });
     useWorldStore.getState().setDeskHighlight(working.id);
   };
 
@@ -293,7 +296,7 @@ export function TaskDetails({ task }: { task: Task }) {
         {(working !== null || canChange(task)) && (
           <div className="flex flex-wrap items-center gap-2">
             {working !== null && (
-              <button type="button" className="btn btn-sm btn-ghost" onClick={locate} title={`Show ${working.name}'s desk in the office`}>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={locate} title={`Show ${working.name} in the office`}>
                 <Crosshair size={14} />
                 Locate {working.name}
               </button>

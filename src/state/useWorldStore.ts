@@ -109,7 +109,7 @@ export interface WorldStore {
   reducedMotion: boolean;
   /** The office has rendered its first frames (or failed to start). */
   sceneReady: boolean;
-  /** "station:<id>" under the pointer. */
+  /** "station:<id>" or "robot:<agentId>" under the pointer. */
   hovered: string | null;
   cameraRequest: CameraRequest | null;
   /** The agent whose desk has the floor outline. Follows the selection; a click on empty space clears it. */
@@ -135,6 +135,7 @@ export interface WorldStore {
   setViewInsets(insets: ViewInsets): void;
   flashPermissions(): void;
   setQuality(quality: Quality, source: QualitySource): void;
+  setReducedMotion(reducedMotion: boolean): void;
   setSceneReady(): void;
   setHovered(hovered: string | null): void;
   requestCamera(request: Omit<CameraRequest, "nonce">): void;
@@ -297,6 +298,9 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     },
     flashPermissions: () => set((state) => ({ permissionFlash: state.permissionFlash + 1 })),
     setQuality: (quality, qualitySource) => set({ quality, qualitySource }),
+    setReducedMotion: (reducedMotion) => {
+      if (get().reducedMotion !== reducedMotion) set({ reducedMotion });
+    },
     setSceneReady: () => {
       if (!get().sceneReady) set({ sceneReady: true });
     },

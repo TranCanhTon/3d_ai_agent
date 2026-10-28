@@ -18,6 +18,7 @@ import { LoadingScreen } from "./LoadingScreen.tsx";
 import { NavRail } from "./NavRail.tsx";
 import { TopBar } from "./TopBar.tsx";
 import { DebugOverlay } from "@/world/DebugOverlay.tsx";
+import { SpeechBubbles } from "@/world/SpeechBubbles.tsx";
 
 const WorldCanvas = dynamic(() => import("@/world/WorldCanvas.tsx"), { ssr: false });
 
@@ -96,6 +97,7 @@ export function AppShell() {
         }}
       >
         <WorldCanvas />
+        <SpeechBubbles />
       </div>
       <DebugOverlay />
       <div className="pointer-events-none absolute inset-0 flex">
