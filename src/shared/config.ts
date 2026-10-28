@@ -78,6 +78,36 @@ export interface WorldSettings {
   cameraDamping: { target: number; distance: number; angle: number };
   /** The debug overlay (?debug=1) refreshes this often. */
   debugRefreshMs: number;
+  robots: RobotSettings;
+}
+
+/** The robots' behaviour (src/shared/domain/robotBrain.ts). */
+export interface RobotSettings {
+  /** Walking speed (m/s); hurrying to the desk (work, a card for me) is `hurry` times faster. */
+  walkSpeed: number;
+  hurry: number;
+  /** Idle this long without interruption before an idle activity starts (?idle=<seconds> overrides it). */
+  idleDelayMs: number;
+  /** Each idle activity lasts a random time in this range. */
+  activityMs: { min: number; max: number };
+  /** Relative chances of the idle activities. */
+  activityWeights: { lounge: number; nap: number; wander: number };
+  /** A handoff talk: both robots face each other and the arc runs this long. */
+  talkMs: number;
+  /** A success or error emote. */
+  emoteMs: number;
+  /** An emote that could not show (a higher rule) is dropped after this long. */
+  emoteMaxWaitMs: number;
+  /** A napping robot that gets work jolts awake for this long first. */
+  wakeMs: number;
+  /** Handoffs waiting per sender; more than this skips to the latest. */
+  maxQueuedHandoffs: number;
+  /** The brain runs this often (ms). */
+  tickMs: number;
+  /** Bubble text is cut to this many characters (with an ellipsis). */
+  bubbleMaxChars: number;
+  /** Arcs drawn at once. */
+  maxArcs: number;
 }
 
 export interface AppConfig {
@@ -273,6 +303,21 @@ export const CONFIG: AppConfig = {
     focusDistance: 7.5,
     cameraDamping: { target: 4, distance: 2, angle: 3 },
     debugRefreshMs: 500,
+    robots: {
+      walkSpeed: 2.4,
+      hurry: 1.5,
+      idleDelayMs: 30_000,
+      activityMs: { min: 20_000, max: 60_000 },
+      activityWeights: { lounge: 40, nap: 30, wander: 30 },
+      talkMs: 2400,
+      emoteMs: 1600,
+      emoteMaxWaitMs: 5000,
+      wakeMs: 600,
+      maxQueuedHandoffs: 2,
+      tickMs: 100,
+      bubbleMaxChars: 38,
+      maxArcs: 2,
+    },
   },
 
   agentRunner: "claude",

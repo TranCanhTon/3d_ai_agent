@@ -83,10 +83,21 @@ import { STATION_IDS } from "../src/shared/domain/agentTypes.ts";
 import {
   CORRIDOR_X,
   CORRIDOR_Z,
+  distanceToObstacle,
   FLOOR,
+  homeSeat,
   HUB_CENTER,
+  IDLE_SPOTS,
   insidePartition,
+  needsSpot,
+  obstacles,
   pathLength,
+  pointAlong,
+  rerouteFrom,
+  ROBOT_RADIUS,
+  visitorSpot,
+  walkPath,
+  type Place,
   PARTITIONS,
   PLANTS,
   route,
@@ -95,6 +106,16 @@ import {
   stationOwner,
   STATIONS,
 } from "../src/shared/domain/worldLayout.ts";
+import {
+  arrived,
+  createBrainState,
+  robotPosition,
+  stepBrain,
+  type BrainAgent,
+  type BrainEvent,
+  type BrainState,
+  type RobotView,
+} from "../src/shared/domain/robotBrain.ts";
 import { CAMERA, cameraPosition, clampDistance, clampTarget, floorOffset, overview, zoomRange, type ViewSize } from "../src/shared/ui/cameraView.ts";
 
 let failures = 0;
@@ -1347,6 +1368,89 @@ check("no stand slot, corridor point, route or plant is inside a partition", () 
   assert.ok(PARTITIONS.length >= 3);
 });
 
+const robotHomes = AGENT_ROLES.map((role) => ROLE_DEFINITIONS[role].homeStation);
+const robotPlaces = (): Place[] => [
+  ...robotHomes.map(homeSeat),
+  ...robotHomes.map(visitorSpot),
+  ...robotHomes.map(needsSpot),
+  ...IDLE_SPOTS,
+];
+
+/** The closest a walk comes to furniture (its own seat's furniture is ignored on the first and last step). */
+function walkClearance(from: Place, to: Place): { gap: number; at: string } {
+  const path = walkPath(from, from.via, to, to.via);
+  let gap = Infinity;
+  let at = "";
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1]!;
+    const b = path[i]!;
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.04));
+    for (let k = 0; k <= steps; k++) {
+      const p = { x: a.x + ((b.x - a.x) * k) / steps, z: a.z + ((b.z - a.z) * k) / steps };
+      for (const obstacle of obstacles()) {
+        if (i === 1 && obstacle.id === from.furniture) continue;
+        if (i === path.length - 1 && obstacle.id === to.furniture) continue;
+        const d = distanceToObstacle(p, obstacle);
+        if (d < gap) {
+          gap = d;
+          at = `${obstacle.id} at (${p.x.toFixed(2)}, ${p.z.toFixed(2)})`;
+        }
+      }
+      if (p.x < FLOOR.minX + ROBOT_RADIUS || p.x > FLOOR.maxX - ROBOT_RADIUS || p.z < FLOOR.minZ + ROBOT_RADIUS || p.z > FLOOR.maxZ - ROBOT_RADIUS) {
+        return { gap: -1, at: `off the floor at (${p.x.toFixed(2)}, ${p.z.toFixed(2)})` };
+      }
+    }
+  }
+  return { gap, at };
+}
+
+check("idle spots: on the floor, unique, enough lounge seats and wander spots", () => {
+  const ids = new Set(robotPlaces().map((p) => p.id));
+  assert.equal(ids.size, robotPlaces().length, "unique ids");
+  assert.equal(IDLE_SPOTS.filter((s) => s.kind === "lounge").length, RING_SEATS);
+  assert.ok(IDLE_SPOTS.filter((s) => s.kind === "wander").length >= AGENT_ROLES.length, "a wander spot for everyone");
+  for (const place of robotPlaces()) {
+    assert.ok(place.x > FLOOR.minX && place.x < FLOOR.maxX && place.z > FLOOR.minZ && place.z < FLOOR.maxZ, place.id);
+    assert.ok(Math.abs(place.via[0]!.z - CORRIDOR_Z) < 1e-9, `${place.id} starts from the corridor`);
+  }
+});
+
+check("every walk between robot places (homes, visitor spots, raised hand spots, idle spots) keeps clear of furniture", () => {
+  for (const from of robotPlaces()) {
+    for (const to of robotPlaces()) {
+      if (from.id === to.id) continue;
+      const { gap, at } = walkClearance(from, to);
+      assert.ok(gap >= ROBOT_RADIUS - 1e-6, `${from.id} → ${to.id}: ${gap.toFixed(2)} m from ${at}`);
+    }
+  }
+});
+
+check("every idle spot stands clear of furniture (a sofa seat sits in its own sofa)", () => {
+  for (const spot of IDLE_SPOTS) {
+    for (const obstacle of obstacles()) {
+      if (obstacle.id === spot.furniture) continue;
+      assert.ok(distanceToObstacle(spot, obstacle) >= ROBOT_RADIUS - 1e-6, `${spot.id} next to ${obstacle.id}`);
+    }
+  }
+});
+
+check("walkPath matches route() between desks; pointAlong walks it; rerouteFrom goes back the way it came", () => {
+  const from = homeSeat("research");
+  const to = homeSeat("dev");
+  const path = walkPath(from, from.via, to, to.via);
+  assert.deepEqual(path.slice(1, -1), route(from.via.at(-1)!, to.via.at(-1)!), "the same corridor route between the stand slots");
+  const half = pointAlong(path, pathLength(path) / 2);
+  assert.equal(half.point.z, CORRIDOR_Z);
+  assert.equal(pointAlong(path, 1e9).point.x, to.x);
+  // Arriving at the lounge, turned around toward a desk: back along the way in, never across the sofas.
+  const lounge = IDLE_SPOTS.find((s) => s.kind === "lounge")!;
+  const walk = walkPath(to, to.via, lounge, lounge.via);
+  const near = pointAlong(walk, pathLength(walk) - 0.5);
+  const back = rerouteFrom(walk, near.segment, near.point, from, from.via);
+  assert.ok(back.some((p) => p.z === CORRIDOR_Z), "through the corridor");
+  for (const p of back.slice(0, back.findIndex((q) => q.z === CORRIDOR_Z))) assert.ok(walk.some((q) => q.x === p.x && q.z === p.z) || p === back[0], "retraces the way in");
+});
+
 // Screens from 1024 to 2560 wide, with the rail, top bar and the 440 px panel open or hidden.
 const views: ViewSize[] = [];
 for (let width = 1024; width <= 2560; width += 128) {
@@ -1414,6 +1518,266 @@ check("overview: furthest zoom, centred on the floor, front edge along the botto
     assert.ok(Math.abs(start.target.x) < 1e-6, "centred");
     assert.ok(clampTarget(view, start.target, start.distance).z === start.target.z);
   }
+});
+
+// ── Robot brain ─────────────────────────────────────────────────────────────
+describe("robot brain");
+
+const BRAIN_PROJECT = "proj_brain";
+const robotSettings = CONFIG.world.robots;
+const robotId = (role: AgentRole) => makeAgentId(BRAIN_PROJECT, role);
+
+function brainAgents(overrides: Partial<Record<AgentRole, Partial<BrainAgent>>> = {}): BrainAgent[] {
+  return AGENT_ROLES.map((role) => ({ id: robotId(role), role, name: ROLE_DEFINITIONS[role].name, status: "idle", busy: false, activity: "", ...overrides[role] }));
+}
+
+interface TickOptions {
+  agents?: BrainAgent[];
+  askers?: string[];
+  events?: BrainEvent[];
+  offline?: boolean;
+  reducedMotion?: boolean;
+}
+
+/** A brain that keeps its state between ticks. */
+function brain(seeds: Record<string, number> = {}) {
+  let state: BrainState = createBrainState(BRAIN_PROJECT, seeds);
+  return {
+    tick(now: number, options: TickOptions = {}): Record<AgentRole, RobotView> {
+      const result = stepBrain(state, {
+        now,
+        agents: options.agents ?? brainAgents(),
+        askers: options.askers ?? [],
+        events: options.events ?? [],
+        offline: options.offline ?? false,
+        reducedMotion: options.reducedMotion ?? false,
+        settings: robotSettings,
+      });
+      state = result.state;
+      return Object.fromEntries(result.robots.map((r) => [r.role, r])) as Record<AgentRole, RobotView>;
+    },
+    get state() {
+      return state;
+    },
+  };
+}
+
+const working = (activity = "Editing src/app.ts"): Partial<BrainAgent> => ({ status: "working", busy: true, activity });
+const handoffEvent = (from: AgentRole, to: AgentRole): BrainEvent => ({ type: "task.assigned", agentId: robotId(from), targetAgentId: robotId(to) });
+
+check("rule priority: needs me > working > emote > handoff > idle", () => {
+  const b = brain();
+  b.tick(0);
+  // QA: a result emote, a handoff to the engineer, and a permission card while busy.
+  let views = b.tick(100, {
+    agents: brainAgents({ qa: { ...working(), status: "waiting_permission" } }),
+    events: [{ type: "qa.failed", agentId: robotId("qa") }, handoffEvent("qa", "engineer")],
+  });
+  assert.equal(views.qa.rule, "needs");
+  assert.equal(views.qa.pose, "raise_hand");
+  assert.equal(views.qa.bubble, "Needs your OK");
+  assert.equal(views.qa.ring, "needs");
+  assert.equal(views.qa.place.id, "needs:testing");
+  assert.equal(views.qa.walk?.speed, robotSettings.walkSpeed * robotSettings.hurry, "hurries");
+  // A card for me (no permission) says "Waiting for you".
+  assert.equal(b.tick(150, { askers: [robotId("orchestrator")] }).orchestrator.bubble, "Waiting for you");
+
+  const c = brain();
+  c.tick(0);
+  views = c.tick(100, { agents: brainAgents({ qa: working() }), events: [{ type: "qa.failed", agentId: robotId("qa") }, handoffEvent("qa", "engineer")] });
+  assert.equal(views.qa.rule, "working", "working beats the emote");
+  assert.equal(views.qa.bubble, "Editing src/app.ts");
+
+  const d = brain();
+  d.tick(0);
+  views = d.tick(100, { events: [{ type: "qa.passed", agentId: robotId("qa") }, handoffEvent("qa", "reviewer")] });
+  assert.equal(views.qa.rule, "emote", "the emote beats the handoff");
+  assert.equal(views.qa.emote?.kind, "success");
+  assert.equal(views.qa.tone, "success");
+  views = d.tick(100 + robotSettings.emoteMs + 1);
+  assert.equal(views.qa.rule, "handoff", "then the handoff");
+  assert.equal(views.reviewer.rule, "idle", "nothing for the others");
+  // A finishing run (status success, still busy for the result hold) is not new work.
+  assert.equal(d.tick(200 + robotSettings.emoteMs, { agents: brainAgents({ qa: { status: "success", busy: true } }) }).qa.rule, "handoff");
+});
+
+check("emotes: verdicts on QA and the reviewer, the task end on the orchestrator", () => {
+  const b = brain();
+  b.tick(0);
+  const views = b.tick(10, { events: [{ type: "review.changes_requested", agentId: robotId("reviewer") }, { type: "task.completed" }] });
+  assert.equal(views.reviewer.emote?.kind, "error");
+  assert.equal(views.reviewer.tone, "error");
+  assert.equal(views.orchestrator.emote?.kind, "success");
+  assert.equal(views.orchestrator.bubble, "Task done");
+  assert.equal(b.tick(10 + robotSettings.emoteMs + 1).orchestrator.emote, null, "lasts emoteMs");
+  // An emote that could not show for emoteMaxWaitMs is dropped.
+  const c = brain();
+  c.tick(0, { agents: brainAgents({ qa: working() }), events: [{ type: "qa.passed", agentId: robotId("qa") }] });
+  assert.equal(c.tick(robotSettings.emoteMaxWaitMs + 10).qa.rule, "idle");
+});
+
+check("handoff: walk to the receiver, talk with an arc for talkMs, then walk back", () => {
+  const b = brain();
+  b.tick(0);
+  let views = b.tick(1000, { agents: brainAgents({ researcher: working("Reading the brief") }), events: [handoffEvent("product_manager", "researcher")] });
+  const pm = views.product_manager;
+  assert.equal(pm.rule, "handoff");
+  assert.equal(pm.place.id, "visit:research");
+  assert.equal(pm.walk?.speed, robotSettings.walkSpeed, "normal speed");
+  assert.ok(pm.bubble.startsWith("Taking the task to Drater"));
+  assert.equal(pm.link, null, "no arc while walking");
+  const arriveAt = pm.walk!.startedAt + (pm.walk!.length / pm.walk!.speed) * 1000;
+  views = b.tick(arriveAt + 50, { agents: brainAgents({ researcher: working() }) });
+  assert.equal(views.product_manager.pose, "talk");
+  assert.deepEqual(views.product_manager.link, { from: robotId("product_manager"), to: robotId("researcher"), startedAt: arriveAt, endsAt: arriveAt + robotSettings.talkMs });
+  assert.ok(views.product_manager.faceToward !== null, "faces the receiver");
+  assert.ok(views.researcher.faceToward !== null, "the receiver turns toward the sender");
+  assert.equal(views.researcher.rule, "working", "the receiver keeps working");
+  const position = robotPosition(b.state.minds[robotId("product_manager")]!, arriveAt + 50);
+  assert.ok(Math.hypot(position.x - views.product_manager.place.x, position.z - views.product_manager.place.z) < 1e-6, "standing at the visitor spot");
+  views = b.tick(arriveAt + robotSettings.talkMs + 10, { agents: brainAgents({ researcher: working() }) });
+  assert.equal(views.product_manager.rule, "idle");
+  assert.equal(views.product_manager.place.id, "seat:product", "walks back to its desk");
+  assert.equal(views.product_manager.link, null);
+  assert.ok(!arrived(b.state.minds[robotId("product_manager")]!, arriveAt + robotSettings.talkMs + 20));
+});
+
+check("handoff: new work during the walk drops it; queued handoffs skip to the latest past the limit", () => {
+  const b = brain();
+  b.tick(0);
+  b.tick(100, { events: [handoffEvent("qa", "engineer")] });
+  const views = b.tick(600, { agents: brainAgents({ qa: working() }) });
+  assert.equal(views.qa.rule, "working");
+  assert.equal(views.qa.place.id, "seat:testing");
+  assert.equal(views.qa.walk?.speed, robotSettings.walkSpeed * robotSettings.hurry, "hurries back");
+  assert.deepEqual(b.state.minds[robotId("qa")]!.handoffs, []);
+  assert.equal(b.tick(5000).qa.rule, "idle", "the dropped handoff does not come back");
+
+  const c = brain();
+  c.tick(0);
+  c.tick(10, { agents: brainAgents({ orchestrator: working() }), events: [handoffEvent("orchestrator", "product_manager"), handoffEvent("orchestrator", "researcher")] });
+  assert.deepEqual(c.state.minds[robotId("orchestrator")]!.handoffs, [], "new work drops them");
+  c.tick(20, { agents: brainAgents({ orchestrator: { status: "success", busy: true } }), events: [handoffEvent("orchestrator", "product_manager"), handoffEvent("orchestrator", "researcher")] });
+  assert.equal(c.state.minds[robotId("orchestrator")]!.talk?.to, robotId("product_manager"), "the first one starts");
+  assert.deepEqual(c.state.minds[robotId("orchestrator")]!.handoffs, [robotId("researcher")]);
+  c.tick(30, { events: [handoffEvent("orchestrator", "engineer"), handoffEvent("orchestrator", "qa")] });
+  assert.deepEqual(c.state.minds[robotId("orchestrator")]!.handoffs, [robotId("qa")], "more than two waiting: only the latest stays");
+});
+
+check("the orchestrator's handoff to the product manager starts from the hub console", () => {
+  const b = brain();
+  b.tick(0);
+  const view = b.tick(10, { events: [handoffEvent("orchestrator", "product_manager")] }).orchestrator;
+  assert.deepEqual(view.walk!.path[0], { x: homeSeat("hub").x, z: homeSeat("hub").z });
+  assert.equal(view.place.id, "visit:product");
+});
+
+check("idle: an activity only after idleDelayMs, lasting activityMs, never the same spot twice in a row", () => {
+  const b = brain();
+  assert.equal(b.tick(0).engineer.place.id, "seat:dev");
+  assert.equal(b.tick(robotSettings.idleDelayMs - 1).engineer.bubble, "Idle", "still at the desk");
+  b.tick(robotSettings.idleDelayMs);
+  const first = b.state.minds[robotId("engineer")]!.activity;
+  assert.ok(first !== null, "picked at idleDelayMs");
+  const duration = first.until - robotSettings.idleDelayMs;
+  assert.ok(duration >= robotSettings.activityMs.min && duration <= robotSettings.activityMs.max, `${duration} ms`);
+  // Many activities in a row for every robot.
+  let now = robotSettings.idleDelayMs;
+  const last: Record<string, string> = {};
+  const kinds = new Set<string>();
+  for (let i = 0; i < 2000; i++) {
+    now += 997;
+    b.tick(now);
+    for (const mind of Object.values(b.state.minds)) {
+      const activity = mind.activity!;
+      const spot = activity.spotId ?? "nap";
+      kinds.add(activity.kind);
+      if (last[mind.agentId] !== undefined && last[mind.agentId] !== spot) assert.notEqual(mind.lastSpot, spot, "a new spot each time");
+      last[mind.agentId] = spot;
+      assert.ok(activity.until - now <= robotSettings.activityMs.max);
+    }
+  }
+  assert.deepEqual([...kinds].sort(), ["lounge", "nap", "wander"], "all three activities happen");
+});
+
+check("spot reservation: idle robots never share a spot", () => {
+  const b = brain();
+  let now = 0;
+  for (let i = 0; i < 3000; i++) {
+    now += 433;
+    const views = Object.values(b.tick(now));
+    const shared = views.map((v) => v.place.id).filter((id) => id.startsWith("spot:"));
+    assert.equal(new Set(shared).size, shared.length, `two robots on one spot at ${now}: ${shared.join(", ")}`);
+    for (const [placeId, agentId] of Object.entries(b.state.reserved)) assert.equal(b.state.minds[agentId]!.place.id, placeId, "a reservation belongs to the robot there");
+  }
+});
+
+check("the seed makes idle behaviour stable per project and role, and is injectable", () => {
+  const run = (seeds: Record<string, number> = {}) => {
+    const b = brain(seeds);
+    b.tick(0);
+    b.tick(robotSettings.idleDelayMs);
+    return b.state.minds[robotId("qa")]!.activity;
+  };
+  assert.deepEqual(run(), run(), "same project and role, same choice");
+  const choices = new Set(Array.from({ length: 40 }, (_, seed) => JSON.stringify(run({ [robotId("qa")]: seed + 1 }))));
+  assert.ok(choices.size > 3, "different seeds choose differently");
+});
+
+check("a napping robot that gets work jolts awake first, then works at its desk; a lounging one hurries back", () => {
+  const b = brain();
+  b.tick(0);
+  const engineer = b.state.minds[robotId("engineer")]!;
+  engineer.activity = { kind: "nap", spotId: null, until: 1e12 };
+  engineer.idleSince = 0;
+  assert.equal(b.tick(1000).engineer.pose, "nap");
+  const views = b.tick(2000, { agents: brainAgents({ engineer: working() }) });
+  assert.equal(views.engineer.rule, "working");
+  assert.equal(views.engineer.wakeUntil, 2000 + robotSettings.wakeMs, "wake up jolt");
+  assert.equal(views.engineer.place.id, "seat:dev");
+  assert.equal(b.tick(2000 + robotSettings.wakeMs + 1, { agents: brainAgents({ engineer: working() }) }).engineer.wakeUntil, null);
+  assert.equal(b.state.minds[robotId("engineer")]!.activity, null);
+
+  const c = brain();
+  c.tick(0);
+  const lounge = IDLE_SPOTS.find((s) => s.kind === "lounge")!;
+  const qa = c.state.minds[robotId("qa")]!;
+  Object.assign(qa, { place: lounge, walk: null, activity: { kind: "lounge", spotId: lounge.id, until: 1e12 }, idleSince: 0 });
+  c.state.reserved[lounge.id] = qa.agentId;
+  const back = c.tick(1000, { agents: brainAgents({ qa: working() }) }).qa;
+  assert.equal(back.place.id, "seat:testing");
+  assert.equal(back.walk?.speed, robotSettings.walkSpeed * robotSettings.hurry);
+  assert.equal(back.wakeUntil, null, "no jolt off the sofa");
+  assert.equal(c.state.reserved[lounge.id], undefined, "the sofa is free again");
+});
+
+check("reduced motion: idle robots stay seated at their desks", () => {
+  const b = brain();
+  for (let now = 0; now < 200_000; now += 1000) {
+    for (const view of Object.values(b.tick(now, { reducedMotion: true }))) {
+      assert.ok(view.place.id.startsWith("seat:"), view.place.id);
+      assert.equal(view.pose, "idle");
+    }
+  }
+});
+
+check("offline: everyone back at the desk, grey ring, bubble Offline, nothing else", () => {
+  const b = brain();
+  b.tick(0);
+  const views = b.tick(10, {
+    offline: true,
+    agents: brainAgents({ engineer: working() }),
+    askers: [robotId("orchestrator")],
+    events: [handoffEvent("qa", "engineer"), { type: "qa.passed", agentId: robotId("qa") }],
+  });
+  for (const view of Object.values(views)) {
+    assert.equal(view.rule, "offline");
+    assert.equal(view.pose, "offline");
+    assert.equal(view.ring, "offline");
+    assert.equal(view.bubble, "Offline");
+    assert.ok(view.place.id.startsWith("seat:"));
+  }
+  assert.equal(b.tick(20).qa.rule, "idle", "no handoff or emote left over");
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────
