@@ -71,6 +71,9 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
       return null;
     case "getNotes":
       return ctx.projects.getNotes(command.args.projectId);
+    case "addNote":
+      ctx.projects.addMyNote(command.args.projectId, command.args.text);
+      return null;
     default: {
       const unknown: never = command;
       throw new Error(`Unknown command: ${(unknown as { name: string }).name}`);

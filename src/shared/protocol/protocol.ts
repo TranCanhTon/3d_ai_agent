@@ -81,6 +81,8 @@ export interface CommandArgsMap {
   /** `text` is what I edited from the message (at most noteMaxChars). */
   pinToNotes: { messageId: string; text: string };
   getNotes: { projectId: string };
+  /** A note written by me: `- <text> (you, YYYY-MM-DD)`, at most noteMaxChars. */
+  addNote: { projectId: string; text: string };
   /**
    * `before` is a message id; returns messages older than it, newest last.
    * view "chat" (default): one of my chats (`chatId`, default the active one); "tasks": the agent's task messages.
@@ -138,6 +140,7 @@ export interface CommandResultMap {
   pinToNotes: null;
   /** The notes file's content. */
   getNotes: string;
+  addNote: null;
   getChatHistory: ChatHistoryPage;
   getSnapshot: WorldSnapshot;
 }

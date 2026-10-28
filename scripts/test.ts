@@ -743,6 +743,7 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "respondPermission", args: { requestId: "perm_1", decision: "allow" } },
   { name: "pinToNotes", args: { messageId: "msg_1", text: "We always use Tailwind" } },
   { name: "getNotes", args: { projectId: "proj_1" } },
+  { name: "addNote", args: { projectId: "proj_1", text: "Deploys go out on Fridays" } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", before: "msg_9", limit: 50 } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", view: "tasks" } },
   { name: "getChatHistory", args: { agentId: "proj_1:qa", chatId: "chat_1", limit: 20 } },
@@ -751,7 +752,7 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 21);
+  assert.equal(names.size, 22);
 });
 
 for (const command of EXAMPLE_COMMANDS) {

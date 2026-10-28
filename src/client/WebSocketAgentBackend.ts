@@ -293,6 +293,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   getNotes(args: CommandArgsMap["getNotes"]) {
     return this.run("getNotes", args);
   }
+  addNote(args: CommandArgsMap["addNote"]) {
+    return this.run("addNote", args);
+  }
   getChatHistory(args: CommandArgsMap["getChatHistory"]) {
     return this.run("getChatHistory", args);
   }

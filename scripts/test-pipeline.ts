@@ -2,11 +2,12 @@
 // with a scripted fake runner per role (never Claude). Folders live under .tmp/.
 
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { AgentManager } from "../server/agents/AgentManager.ts";
 import type { AgentRunCallbacks, AgentRunInput, AgentRunner } from "../server/agents/AgentRunner.ts";
 import { PermissionBroker } from "../server/agents/PermissionBroker.ts";
+import { ScriptedRunner } from "../server/agents/ScriptedRunner.ts";
 import { silentLogger } from "../server/log.ts";
 import { Pipeline } from "../server/pipeline/Pipeline.ts";
 import { ensureNotesFile, noteDate, readNotes } from "../server/projects/notes.ts";
@@ -139,7 +140,9 @@ interface Boot {
 let bootSeq = 0;
 
 /** A fresh (or reloaded, with the same dataDir) server core without sockets. */
-function boot(dataDir: string, projectIds: string[] = ["proj_a"]): Boot {
+type RunnerOverride = (agent: { id: string; role: AgentRole }, broker: PermissionBroker) => AgentRunner;
+
+function boot(dataDir: string, projectIds: string[] = ["proj_a"], makeRunner?: RunnerOverride): Boot {
   const events: AgentEvent[] = [];
   const store = new DataStore(dataDir, silentLogger);
   const world = new World({ onEvent: (e) => events.push(e), onChange: () => {} }, "echo", Date.now, store);
@@ -149,7 +152,7 @@ function boot(dataDir: string, projectIds: string[] = ["proj_a"]): Boot {
   let projects: ProjectService | null = null;
   const agents = new AgentManager(
     world,
-    (agent) => runners.create(agent),
+    (agent) => (makeRunner === undefined ? runners.create(agent) : makeRunner(agent, broker)),
     (agentId, text) => {
       if (projects === null) throw new Error("no notes");
       return projects.addAgentNote(agentId, text);
@@ -657,6 +660,33 @@ await check("a step runs with its agent's model at step start; a change mid step
   const engineerRuns = b.runners.calls.filter((c) => c.role === "engineer").map((c) => [c.model, c.effort]);
   assert.deepEqual(engineerRuns, [["opus", "high"], ["sonnet", null]], "rework attempt uses the new setting");
   assert.ok(b.runners.calls.filter((c) => c.role === "qa").every((c) => c.model === "sonnet" && c.effort === "medium"));
+});
+
+await check("scripted runner: a full task runs to done with real cards, QA failing the first attempt", async () => {
+  const timing = { thinkMs: 1, wordMs: 0, toolMs: 1 };
+  const b = boot(join(tmpDir, `case-${++caseSeq}`, "data"), ["proj_a"], (agent, broker) => new ScriptedRunner({ agent, broker, timing }));
+  const answered: string[] = [];
+  // Answer every card like I would in the UI.
+  const answer = setInterval(() => {
+    for (const request of b.world.pendingPermissions) {
+      answered.push(`${request.toolName}:${request.summary}`);
+      b.broker.respond(request.id, "allow");
+    }
+  }, 2);
+  try {
+    const id = submit(b, "Add dark mode");
+    const done = await untilEnded(b, id);
+    assert.equal(done.endReason, "done", done.blockedReason ?? "");
+    assert.equal(done.iteration, 2, "QA failed attempt 1, passed attempt 2");
+    assert.deepEqual(done.subtasks.map((s) => s.title), ["Add src/add-dark-mode.ts", "Cover it with a test", "Mention it in the README"]);
+    assert.equal(done.findings.length, 2);
+    assert.equal(done.summary, "Add dark mode: added src/add-dark-mode.ts with a test (scripted run)");
+    assert.deepEqual(answered, ["Write:Writing src/add-dark-mode.ts", "Write:Writing src/add-dark-mode.ts"], "one Write card per build step");
+    assert.ok(!existsSync(join(b.root, "src", "add-dark-mode.ts")), "an allowed scripted Write writes nothing");
+    assert.ok(readNotes(b.root).includes(`- Task "Add dark mode" done: Add dark mode: added src/add-dark-mode.ts`));
+  } finally {
+    clearInterval(answer);
+  }
 });
 
 await check("submit refuses an empty or too long title", async () => {

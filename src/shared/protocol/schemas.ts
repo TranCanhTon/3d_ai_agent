@@ -3,7 +3,7 @@
 // drifts from the hand-written types in protocol.ts and src/shared/domain.
 
 import { z } from "zod";
-import { CONFIG } from "../config.ts";
+import { AGENT_RUNNER_KINDS, CONFIG } from "../config.ts";
 import { AGENT_STATUSES, EFFORT_LEVELS, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
 import { CHAT_MESSAGE_STATUSES, type Chat, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionRequest } from "../domain/permissions.ts";
@@ -172,7 +172,7 @@ export const worldSnapshotSchema = z.object({
   pendingPermissions: z.array(permissionRequestSchema),
   usage: z.object({ limited: z.boolean(), resetsAt: epochMs.nullable() }),
   auth: z.object({ source: z.string().nullable() }),
-  runner: z.enum(["claude", "echo"]),
+  runner: z.enum(AGENT_RUNNER_KINDS),
 });
 
 // ── Client → server (strict: unknown keys are rejected) ─────────────────────
@@ -221,6 +221,7 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
   command("respondPermission", { requestId: id, decision: z.enum(["allow", "deny"]) }),
   command("pinToNotes", { messageId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
   command("getNotes", { projectId: id }),
+  command("addNote", { projectId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
   command("getChatHistory", {
     agentId: id,
     before: id.optional(),
@@ -285,6 +286,7 @@ export const commandResultSchemas = {
   respondPermission: z.null(),
   pinToNotes: z.null(),
   getNotes: z.string(),
+  addNote: z.null(),
   getChatHistory: z.object({ messages: z.array(chatMessageSchema), hasMore: z.boolean() }),
   getSnapshot: worldSnapshotSchema,
 };

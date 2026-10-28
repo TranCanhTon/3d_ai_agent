@@ -15,7 +15,7 @@ import { appendNoteLine, ensureNotesFile } from "../server/projects/notes.ts";
 import { AGENT_ROLES, ROLE_DEFINITIONS } from "../src/shared/domain/roles.ts";
 import { DENIED_BY_USER, PermissionBroker, STOPPED_BY_USER } from "../server/agents/PermissionBroker.ts";
 import { silentLogger } from "../server/log.ts";
-import { startServer } from "../server/startServer.ts";
+import { resolveRunnerKind, startServer } from "../server/startServer.ts";
 import { World } from "../server/world/World.ts";
 import { CONFIG } from "../src/shared/config.ts";
 import type { AgentStatus } from "../src/shared/domain/agentTypes.ts";
@@ -249,6 +249,16 @@ await check("an aborted signal denies a waiting request", async () => {
   controller.abort();
   assert.deepEqual(await pending, { behavior: "deny", message: STOPPED_BY_USER });
   assert.equal(world.pendingPermissions.length, 0);
+});
+
+// ── Runner kind ─────────────────────────────────────────────────────────────
+console.log("\nRunner kind");
+
+await check("--runner= wins over AGENT_RUNNER, which wins over config; an unknown flag throws", () => {
+  assert.equal(resolveRunnerKind({ AGENT_RUNNER: "echo" }, ["--runner=scripted"]), "scripted");
+  assert.equal(resolveRunnerKind({ AGENT_RUNNER: "echo" }, []), "echo");
+  assert.equal(resolveRunnerKind({ AGENT_RUNNER: "nonsense" }), CONFIG.agentRunner);
+  assert.throws(() => resolveRunnerKind({}, ["--runner=gpt"]), /Unknown runner "gpt"/);
 });
 
 // ── Billing guard ───────────────────────────────────────────────────────────

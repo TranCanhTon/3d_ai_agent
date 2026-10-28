@@ -441,6 +441,17 @@ await check("pinToNotes: my edited text is appended and the message is marked pi
 
 let firstResearcherChat = "";
 
+await check("addNote: my note is appended as 'you', capped, empty refused, emits notes.updated", async () => {
+  await client.ok("addNote", { projectId: shopId(), text: "  Deploys go out\n on Fridays " });
+  const notes = await client.ok<string>("getNotes", { projectId: shopId() });
+  assert.ok(notes.includes(`- Deploys go out on Fridays (you, ${today()})`), notes);
+  const updated = await client.waitForEvent((e) => e.type === "notes.updated" && e.message.includes("Deploys go out"), "notes.updated");
+  assert.equal(updated.projectId, shopId());
+  assert.match(await client.error("addNote", { projectId: shopId(), text: "   " }), /text/);
+  assert.match(await client.error("addNote", { projectId: shopId(), text: "x".repeat(CONFIG.noteMaxChars + 1) }), /text/);
+  assert.match(await client.error("addNote", { projectId: "proj_nope", text: "x" }), /Unknown project/);
+});
+
 await check("chats: my first message is the title; the reply counts and sets the session and context size", async () => {
   const researcher = shopAgent("researcher");
   await client.ok("sendMessage", { agentId: researcher, text: "  What   does the cart do?\nAnd the checkout?" });

@@ -30,7 +30,7 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - `src/shared/protocol/` WebSocket contract: `protocol.ts` (types) and `schemas.ts` (zod schemas, `parseClientMessage`, `parseServerMessage`, compile-time checks that schemas match the types).
 - `src/shared/backend/AgentBackend.ts` the interface the browser uses to reach the server.
 - `src/shared/events/eventPayloads.ts` zod schemas for event `metadata` the client relies on (chat messages, deltas, status, queue, `{ task }` on task events).
-- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle, chats, model settings, chat only, task inputs and the `TaskHooks` the pipeline implements), `pipeline/Pipeline.ts` (tasks, the waiting line, steps, pauses, resume, cancel, task log), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` is the fake runner for tests and `AGENT_RUNNER=echo`). Imports `src/shared` with relative `.ts` paths.
+- `server/` Node WebSocket server run with tsx: `startServer.ts` (loopback bind, Origin check, token hello, 1 MB payload, ping, coalesced snapshots), `commands.ts`, `world/World.ts` (in-memory state + events), `agents/AgentManager.ts` (per-agent queue and run lifecycle, chats, model settings, chat only, task inputs and the `TaskHooks` the pipeline implements), `pipeline/Pipeline.ts` (tasks, the waiting line, steps, pauses, resume, cancel, task log), `agents/AgentRunner.ts` (runner interface; `EchoRunner.ts` is the fake runner for tests and `AGENT_RUNNER=echo`; `ScriptedRunner.ts` is the fake team for `npm run dev:scripted`). Imports `src/shared` with relative `.ts` paths.
 - `src/app/api/session-token/route.ts` gives the browser the token the server writes to `data/session-token` (loopback Host only).
 - `src/client/` `WebSocketAgentBackend.ts` (AgentBackend over WebSocket, acks, timeouts, reconnect) and `backendClient.ts` (singleton + store wiring).
 - `src/state/useWorldStore.ts` Zustand mirror: connection, throttled snapshot, chats per `chatKey` (an agent's direct chat, or its task messages), recent events.
@@ -39,7 +39,7 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - `server/projects/` `folders.ts` (folder browser and project folder rules, all on real paths), `notes.ts` (`.agentworld/notes.md`, the `.gitignore` entry), `ProjectService.ts` (create, archive, restore, notes, pins).
 - `server/store/` `DataStore.ts` JSON persistence under `dataDir`: `projects.json`, `agents/<projectId>.json` (session id, chat only, queued inputs), `chats/<agentId with : → _>.jsonl` (append only; the latest line per message id wins, `{ deletedId }` removes one), `tasks/<projectId>.json` (each task plus the pipeline's step state). Whole files are written atomically (`files.ts`). Loaded once on start by `World.load()`.
 - `server/roles/` the role prompt files (`shared.md` + one per role) and `rolePrompts.ts`. Read at the start of every run and appended to Claude Code's own prompt.
-- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard, role prompts, add_note and ClaudeRunner with a fake SDK (tsx); `scripts/test-projects.ts` folder rules, projects, notes and persistence across a server restart; `scripts/test-pipeline.ts` the pipeline with a scripted fake runner per role (happy path, skips, rework, pauses, cancel, line order, restart). Tests use folders under `.tmp/`, never `data/` or `D:\agent-sandbox`. `npm test` never calls Claude. `npm run test:live` makes one real call (with a throwaway data folder).
+- `scripts/test.ts` pure domain tests; `scripts/test-server.ts` server integration tests; `scripts/test-agents.ts` translator, broker, billing guard, role prompts, add_note and ClaudeRunner with a fake SDK (tsx); `scripts/test-projects.ts` folder rules, projects, notes and persistence across a server restart; `scripts/test-pipeline.ts` the pipeline with a scripted fake runner per role (happy path, skips, rework, pauses, cancel, line order, restart, model at step start) and one full task with `ScriptedRunner`. Tests use folders under `.tmp/`, never `data/` or `D:\agent-sandbox`. `npm test` never calls Claude. `npm run test:live` makes one real call (with a throwaway data folder).
 
 ## Claude agents
 
@@ -73,6 +73,12 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 - A chat's title is my first message in it (one line, `chatTitleMaxChars`); `messageCount` counts my messages and the replies; `contextTokens` is the latest run's prompt tokens (the UI suggests a new chat above `longChatTokens`). Events: `chat.started` (feed) and `chat.updated`, both with `{ chat }`.
 - Saved in `agents/<projectId>.json` (`chats`, `activeChatId`); count and last message time are rebuilt from the messages on load. Files from before chats: the agent's old `claudeSessionId` becomes its first chat and messages without `chatId` belong to it.
 
+## Scripted runner
+
+- `npm run dev:scripted` starts the server with `--runner=scripted` (a CLI flag rather than an env var, so it works on every shell; `--runner=` beats `AGENT_RUNNER`, which beats `config.agentRunner`). The top bar shows "Scripted runner · no Claude calls".
+- It saves to `config.scriptedDataDir` (`.tmp/scripted-data`), never `data/`, so fake replies never mix with real chats and tasks.
+- Each role answers its handoff with the right ending after a short think, a few tool lines and streamed text (`config.scripted` timings). Every build step makes one Write that goes through the PermissionBroker, so a real card appears; an allowed Write writes nothing. QA fails a task's first attempt. A task title ending in `?` makes sONion Ring ask a question. Direct chat gets a short canned markdown reply.
+
 ## Machine constraints (Windows)
 
 - Drive C: is full. Never write anything to C:. The project lives in `D:\3d-ai-agent`; npm uses `.npm-cache/` (project `.npmrc`); temp files go to `.tmp/` (`.claude/settings.local.json` sets TEMP, TMP, NODE_COMPILE_CACHE). When starting processes yourself, set those env vars too.
@@ -88,7 +94,7 @@ A local app for managing teams of real Claude agents. Each project is a code fol
 
 ## Protocol in one paragraph
 
-First client message: `{ type: "hello", token }`. Then `{ type: "command", id, command: { name, args } }`. Server sends `{ type: "snapshot", snapshot }`, `{ type: "event", event }` and `{ type: "ack", id, ok, result | error }`. Chat history is not in the snapshot: use `getChatHistory` (`view: "chat"`, the default, for direct chat; `"tasks"` for an agent's task messages). Task commands: `submitTask` (returns the Task), `cancelTask`, `resumeTask`, `answerTask { taskId, text }`; they ack `ok:false` with the reason when the task is not in a state for it. When you add or change a command, update `CommandArgsMap`/`CommandResultMap` in `protocol.ts`, the schema in `schemas.ts` and the examples in `scripts/test.ts`; typecheck fails if the schema and type drift.
+First client message: `{ type: "hello", token }`. Then `{ type: "command", id, command: { name, args } }`. Server sends `{ type: "snapshot", snapshot }`, `{ type: "event", event }` and `{ type: "ack", id, ok, result | error }`. Chat history is not in the snapshot: use `getChatHistory` (`view: "chat"`, the default, for direct chat; `"tasks"` for an agent's task messages). Notes: `getNotes`, `pinToNotes { messageId, text }` (`pinned by you`), `addNote { projectId, text }` (`you`). Task commands: `submitTask` (returns the Task), `cancelTask`, `resumeTask`, `answerTask { taskId, text }`; they ack `ok:false` with the reason when the task is not in a state for it. When you add or change a command, update `CommandArgsMap`/`CommandResultMap` in `protocol.ts`, the schema in `schemas.ts` and the examples in `scripts/test.ts`; typecheck fails if the schema and type drift.
 
 ## Checks
 
@@ -99,6 +105,7 @@ First client message: `{ type: "hello", token }`. Then `{ type: "command", id, c
     npm run dev         # web (http://localhost:3000) + server (ws://127.0.0.1:4317)
     npm run dev:web     # or run them in two terminals
     npm run dev:server
+    npm run dev:scripted  # web + server with the scripted fake team (no Claude calls, own data in .tmp/scripted-data)
 
 All three checks must pass before a phase is done. Requires Node 22.6+.
 

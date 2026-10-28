@@ -1,9 +1,9 @@
-// Entry point: `npm run dev:server` (tsx watch server/index.ts).
+// Entry point: `npm run dev:server` (tsx watch server/index.ts). `--runner=scripted` uses the fake team.
 
 import { join, resolve } from "node:path";
 import { CONFIG } from "../src/shared/config.ts";
 import { consoleLogger } from "./log.ts";
-import { startServer } from "./startServer.ts";
+import { resolveRunnerKind, startServer } from "./startServer.ts";
 
 let server: Awaited<ReturnType<typeof startServer>>;
 try {
@@ -12,6 +12,7 @@ try {
     port: CONFIG.serverPort,
     tokenPath: resolve(join(CONFIG.dataDir, CONFIG.sessionTokenFile)),
     allowedOrigins: CONFIG.allowedOrigins,
+    runner: resolveRunnerKind(process.env, process.argv.slice(2)),
   });
 } catch (error) {
   consoleLogger(`server failed to start: ${error instanceof Error ? error.message : String(error)}`);

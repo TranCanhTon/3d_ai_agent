@@ -118,6 +118,10 @@ export interface AppConfig {
   sandboxProjectId: string;
   /** Temporary echo agent (replaced by the Claude runner in phase 3). */
   echo: { thinkMs: number; wordMs: number };
+  /** The scripted runner (npm run dev:scripted): fake team replies with real permission cards. */
+  scripted: { thinkMs: number; wordMs: number; toolMs: number };
+  /** The scripted runner's own data folder, so fake replies never mix with real chats and tasks. */
+  scriptedDataDir: string;
 
   // ── Browser client ──
   commandTimeoutMs: number;
@@ -128,7 +132,7 @@ export interface AppConfig {
   maxStoredEvents: number;
 
   // ── Claude agents (phase 3) ──
-  /** Which runner answers chat messages. The AGENT_RUNNER env var overrides it; tests force "echo". */
+  /** Which runner answers chat messages. `--runner=<kind>` or the AGENT_RUNNER env var overrides it; tests force "echo". */
   agentRunner: AgentRunnerKind;
   /** Folder of the seeded Sandbox project. Created and git-initialised if missing. Never this app's repo. */
   sandboxRoot: string;
@@ -146,7 +150,9 @@ export interface AppConfig {
   notesPromptMaxChars: number;
 }
 
-export type AgentRunnerKind = "claude" | "echo";
+/** "claude": real agents. "echo" and "scripted": fakes that never call Claude. */
+export const AGENT_RUNNER_KINDS = ["claude", "echo", "scripted"] as const;
+export type AgentRunnerKind = (typeof AGENT_RUNNER_KINDS)[number];
 
 /** Placeholder in blockedProjectRoots for this app's own folder (resolved by the server at runtime). */
 export const APP_ROOT = "<app>";
@@ -233,6 +239,8 @@ export const CONFIG: AppConfig = {
   resultHoldMs: 800,
   sandboxProjectId: "proj_sandbox",
   echo: { thinkMs: 600, wordMs: 60 },
+  scripted: { thinkMs: 900, wordMs: 35, toolMs: 500 },
+  scriptedDataDir: "./.tmp/scripted-data",
 
   commandTimeoutMs: 10_000,
   reconnectBackoffMs: [500, 1000, 2000, 5000],

@@ -107,6 +107,12 @@ export class ProjectService {
     return this.appendNote(agent.projectId, formatNote(cleanNoteText(text), agent.name, this.deps.world.now()));
   }
 
+  /** A note I wrote in the Notes tab: `- <text> (you, YYYY-MM-DD)`. */
+  addMyNote(projectId: string, text: string): string {
+    if (this.deps.world.getProject(projectId).archived) throw new Error("Project is archived");
+    return this.appendNote(projectId, formatNote(cleanNoteText(text), "you", this.deps.world.now()));
+  }
+
   /** The pipeline's task log line: `- <text> (task log, YYYY-MM-DD)`, text cut to noteMaxChars. */
   addTaskLog(projectId: string, text: string): string {
     return this.appendNote(projectId, formatNote(cleanNoteText(text), "task log", this.deps.world.now()));

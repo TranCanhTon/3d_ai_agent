@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import { CONFIG, type AgentRunnerKind } from "../src/shared/config.ts";
+import { AGENT_RUNNER_KINDS, CONFIG, type AgentRunnerKind } from "../src/shared/config.ts";
 import type { AgentEvent } from "../src/shared/events/eventTypes.ts";
 import type { ServerMessage } from "../src/shared/protocol/protocol.ts";
 import { parseClientMessage } from "../src/shared/protocol/schemas.ts";
@@ -15,6 +15,7 @@ import { AgentManager } from "./agents/AgentManager.ts";
 import type { AgentRunnerFactory } from "./agents/AgentRunner.ts";
 import { assertSubscriptionBilling, ClaudeRunner } from "./agents/claude/ClaudeRunner.ts";
 import { EchoRunner } from "./agents/EchoRunner.ts";
+import { ScriptedRunner } from "./agents/ScriptedRunner.ts";
 import { PermissionBroker } from "./agents/PermissionBroker.ts";
 import { handleCommand } from "./commands.ts";
 import { consoleLogger, type Logger } from "./log.ts";
@@ -33,7 +34,7 @@ export interface ServerOptions {
   allowedOrigins: string[];
   helloTimeoutMs?: number;
   pingIntervalMs?: number;
-  /** "claude" (real agents) or "echo" (fake). Defaults to AGENT_RUNNER, then config.agentRunner. */
+  /** "claude" (real agents), "echo" or "scripted" (fakes). Defaults to AGENT_RUNNER, then config.agentRunner. */
   runner?: AgentRunnerKind;
   /** Overrides the runner entirely (tests). */
   createRunner?: AgentRunnerFactory;
@@ -42,7 +43,7 @@ export interface ServerOptions {
   sandboxRoot?: string;
   /** This app's own folder: resolves data paths and APP_ROOT in blockedProjectRoots. Defaults to the cwd. */
   appRoot?: string;
-  /** Where projects, agents and chats are saved. Defaults to config.dataDir inside appRoot. */
+  /** Where projects, agents and chats are saved. Defaults to config.dataDir inside appRoot (config.scriptedDataDir for the scripted runner). */
   dataDir?: string;
   /** Defaults to config.folderBrowserRoot. */
   folderBrowserRoot?: string;
@@ -50,10 +51,16 @@ export interface ServerOptions {
   blockedProjectRoots?: string[];
 }
 
-export function resolveRunnerKind(env: Record<string, string | undefined>): AgentRunnerKind {
-  const value = env.AGENT_RUNNER;
-  if (value === "claude" || value === "echo") return value;
-  return CONFIG.agentRunner;
+function isRunnerKind(value: string | undefined): value is AgentRunnerKind {
+  return (AGENT_RUNNER_KINDS as readonly (string | undefined)[]).includes(value);
+}
+
+/** `--runner=<kind>` first (works the same on every shell), then AGENT_RUNNER, then config. */
+export function resolveRunnerKind(env: Record<string, string | undefined>, argv: readonly string[] = []): AgentRunnerKind {
+  const flag = argv.find((arg) => arg.startsWith("--runner="))?.slice("--runner=".length);
+  if (flag !== undefined && !isRunnerKind(flag)) throw new Error(`Unknown runner "${flag}" (use ${AGENT_RUNNER_KINDS.join(", ")})`);
+  if (isRunnerKind(flag)) return flag;
+  return isRunnerKind(env.AGENT_RUNNER) ? env.AGENT_RUNNER : CONFIG.agentRunner;
 }
 
 export interface RunningServer {
@@ -82,7 +89,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   // Billing guard: never start Claude agents that would bill an API key.
   if (runnerKind === "claude" && options.createRunner === undefined) assertSubscriptionBilling(process.env);
 
-  const dataDir = resolve(appRoot, options.dataDir ?? CONFIG.dataDir);
+  const dataDir = resolve(appRoot, options.dataDir ?? (runnerKind === "scripted" ? CONFIG.scriptedDataDir : CONFIG.dataDir));
   const browserRoot = resolveBrowserRoot(options.folderBrowserRoot ?? CONFIG.folderBrowserRoot);
   const blockedRoots = resolveBlockedRoots(options.blockedProjectRoots ?? CONFIG.blockedProjectRoots, appRoot);
   const store = new DataStore(dataDir, log);
@@ -140,7 +147,9 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     options.createRunner ??
     (runnerKind === "echo"
       ? (agent) => new EchoRunner(agent.name)
-      : (agent) =>
+      : runnerKind === "scripted"
+        ? (agent) => new ScriptedRunner({ agent, broker: broker() })
+        : (agent) =>
           new ClaudeRunner({
             agent,
             broker: broker(),
