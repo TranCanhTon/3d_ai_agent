@@ -74,7 +74,7 @@ import {
   stationOwner,
   STATIONS,
 } from "../src/shared/domain/worldLayout.ts";
-import { CAMERA_LIMITS, CAMERA_PRESETS, fitFactor, targetInLimits } from "../src/shared/ui/cameraPresets.ts";
+import { CAMERA, cameraPosition, clampDistance, clampTarget, floorOffset, overview, zoomRange, type ViewSize } from "../src/shared/ui/cameraView.ts";
 
 let failures = 0;
 
@@ -1162,27 +1162,73 @@ check("no stand slot, corridor point, route or plant is inside a partition", () 
   assert.ok(PARTITIONS.length >= 3);
 });
 
-check("every camera preset target is inside CAMERA_LIMITS", () => {
-  for (const preset of Object.values(CAMERA_PRESETS)) {
-    assert.ok(targetInLimits(preset.target), preset.id);
-    const distance = Math.hypot(preset.position.x - preset.target.x, preset.position.y - preset.target.y, preset.position.z - preset.target.z);
-    assert.ok(distance >= CAMERA_LIMITS.minDistance && distance <= CAMERA_LIMITS.maxDistance, `${preset.id} distance`);
-    const polar = Math.acos((preset.position.y - preset.target.y) / distance);
-    assert.ok(polar >= CAMERA_LIMITS.minPolarAngle && polar <= CAMERA_LIMITS.maxPolarAngle, `${preset.id} polar ${polar}`);
+// Screens from 1024 to 2560 wide, with the rail, top bar and the 440 px panel open or hidden.
+const views: ViewSize[] = [];
+for (let width = 1024; width <= 2560; width += 128) {
+  for (const height of [700, 768, 900, 1080, 1440]) {
+    for (const right of [0, 440]) views.push({ width, height, insets: { left: 64, top: 56, right, bottom: 0 } });
+  }
+}
+
+check("the camera never rotates: fixed pitch looking at the back wall, any target and zoom", () => {
+  for (const [target, distance] of [[{ x: 0, z: 0 }, 10], [{ x: -9, z: 4 }, 30]] as const) {
+    const p = cameraPosition(target, distance);
+    assert.ok(Math.abs(Math.atan2(p.y, p.z - target.z) - CAMERA.pitch) < 1e-9, "same angle down");
+    assert.equal(p.x, target.x, "straight toward −z, no sideways turn");
+  }
+  assert.ok(Math.abs((CAMERA.pitch * 180) / Math.PI - 35) < 1e-9);
+});
+
+check("the pixel at the free area's centre looks at the target; the floor point under a drag moves with it", () => {
+  for (const view of views) {
+    const centre = floorOffset(view, view.insets.left + (view.width - view.insets.left - view.insets.right) / 2, view.insets.top + (view.height - view.insets.top) / 2, 20);
+    assert.ok(centre !== null && Math.hypot(centre.x, centre.z) < 1e-6, `${view.width}x${view.height}`);
+  }
+  const view = views[0] as ViewSize;
+  const a = floorOffset(view, 300, 500, 15);
+  const b = floorOffset(view, 400, 500, 15);
+  assert.ok(a !== null && b !== null && b.x > a.x, "right on screen is +x on the floor");
+});
+
+check("zoom range: closest shows a desk at about a third of the width; furthest fits the floor's width", () => {
+  for (const view of views) {
+    const range = zoomRange(view);
+    assert.ok(range.min > 0 && range.min < range.max, `${view.width}x${view.height} right ${view.insets.right}`);
+    const freeRight = view.width - view.insets.right;
+    const left = floorOffset(view, view.insets.left, view.height, range.max);
+    const right = floorOffset(view, freeRight, view.height, range.max);
+    assert.ok(left !== null && right !== null && right.x - left.x <= FLOOR.width + 1e-6, "the bottom edge spans at most the floor");
+    assert.equal(clampDistance(view, 1000), range.max);
+    assert.equal(clampDistance(view, 0.1), range.min);
   }
 });
 
-check("fit factor stays in [1, 2.2] from no insets to a 400 px side panel, 1024 to 2560 px wide", () => {
-  for (let width = 1024; width <= 2560; width += 64) {
-    for (const height of [640, 768, 900, 1080, 1440]) {
-      for (const right of [0, 100, 200, 300, 400]) {
-        const f = fitFactor(width, height, { left: right === 0 ? 0 : 64, top: right === 0 ? 0 : 64, right, bottom: 0 });
-        assert.ok(f >= 1 && f <= 2.2, `${width}x${height} right ${right}: ${f}`);
+check("panning is clamped: the free area's bottom corners stay on the floor at every zoom", () => {
+  for (const view of views) {
+    const range = zoomRange(view);
+    for (const distance of [range.min, (range.min + range.max) / 2, range.max]) {
+      for (const wanted of [{ x: -100, z: -100 }, { x: 100, z: 100 }, { x: 0, z: 0 }, { x: -100, z: 100 }]) {
+        const target = clampTarget(view, wanted, distance);
+        for (const px of [view.insets.left, view.width - view.insets.right]) {
+          const hit = floorOffset(view, px, view.height, distance);
+          assert.ok(hit !== null);
+          const x = target.x + hit.x;
+          const z = target.z + hit.z;
+          assert.ok(x >= FLOOR.minX - 1e-6 && x <= FLOOR.maxX + 1e-6 && z <= FLOOR.maxZ + 1e-6, `${view.width}x${view.height} d ${distance.toFixed(1)}: (${x.toFixed(2)}, ${z.toFixed(2)})`);
+        }
+        assert.ok(target.z >= CAMERA.targetMinZ - 1e-6, "never past the back wall");
       }
     }
   }
-  assert.equal(fitFactor(2560, 1440, { left: 0, top: 0, right: 0, bottom: 0 }), 1, "a wide free screen needs no extra distance");
-  assert.ok(fitFactor(1024, 768, { left: 64, top: 64, right: 412, bottom: 0 }) > 1.5, "a narrow free area moves the camera back");
+});
+
+check("overview: furthest zoom, centred on the floor, front edge along the bottom", () => {
+  for (const view of views) {
+    const start = overview(view);
+    assert.equal(start.distance, zoomRange(view).max);
+    assert.ok(Math.abs(start.target.x) < 1e-6, "centred");
+    assert.ok(clampTarget(view, start.target, start.distance).z === start.target.z);
+  }
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────

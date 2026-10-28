@@ -26,7 +26,7 @@ export function DebugOverlay() {
     ["quality", `${quality} (${source})`],
   ];
   return (
-    <div className="surface pointer-events-none absolute bottom-3 z-10 rounded-lg px-3 py-2 font-mono text-[11px] leading-5 text-mist-300" style={{ left: left + 12 }} data-testid="debug-overlay">
+    <div className="surface pointer-events-none absolute bottom-3 z-10 rounded-lg px-3 py-2 font-mono text-xs leading-5 text-mist-300" style={{ left: left + 12 }} data-testid="debug-overlay">
       {rows.map(([label, value]) => (
         <div key={label} className="flex justify-between gap-6">
           <span className="text-mist-500">{label}</span>

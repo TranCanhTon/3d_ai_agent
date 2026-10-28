@@ -30,7 +30,7 @@ export function ActivityRow({ event }: { event: AgentEvent }) {
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className={cx("mt-1.5 size-1.5 shrink-0 rounded-full", SEVERITY[event.severity])} aria-label={event.severity} />
-      <span className="w-10 shrink-0 pt-px text-[11px] text-mist-500">
+      <span className="w-10 shrink-0 pt-px text-xs text-mist-500">
         <ClockTime at={event.timestamp} />
       </span>
       {(event.agentId !== undefined || event.targetAgentId !== undefined) && (

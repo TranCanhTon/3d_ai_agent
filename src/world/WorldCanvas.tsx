@@ -9,7 +9,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Component, type ReactNode, useRef, useState } from "react";
 import * as THREE from "three";
 import { CONFIG } from "@/shared/config.ts";
-import { CAMERA_PRESETS } from "@/shared/ui/cameraPresets.ts";
+import { CAMERA } from "@/shared/ui/cameraView.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
 import { CameraController } from "./CameraController.tsx";
 import { debugEnabled, publishDebugStats } from "./debugStats.ts";
@@ -18,7 +18,6 @@ import { Lighting } from "./Lighting.tsx";
 import { OfficeEnvironment } from "./OfficeEnvironment.tsx";
 import { Workstations } from "./Workstations.tsx";
 
-const OVERVIEW = CAMERA_PRESETS.overview.position;
 let canvasesCreated = 0;
 
 /** Tells the loading screen the office is on screen after a few rendered frames. */
@@ -88,11 +87,11 @@ export default function WorldCanvas() {
       <Canvas
         shadows={high ? "percentage" : false}
         dpr={high ? [...CONFIG.world.dpr.high] : [...CONFIG.world.dpr.low]}
-        camera={{ position: [OVERVIEW.x, OVERVIEW.y, OVERVIEW.z], fov: 40, near: 0.1, far: 220 }}
+        camera={{ position: [0, 20, 30], fov: CAMERA.fov, near: 0.1, far: 220 }}
         gl={{ antialias: true, powerPreference: "high-performance" }}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.15;
+          gl.toneMappingExposure = 1.2;
           canvasesCreated++;
           if (process.env.NODE_ENV !== "production") console.info(`[world] canvas created (${canvasesCreated})`);
         }}

@@ -1,7 +1,8 @@
 "use client";
 
-// Chat message rendering shared by the Chat and Tasks views of an agent:
-// bubbles, tool lines, the pin editor and a list that sticks to the bottom.
+// Task message rendering shared by an agent's work view and a task's thread:
+// my messages in a bubble, agents' replies as plain text, tool lines, the pin
+// editor and a list that sticks to the bottom.
 
 import {
   ArrowDown,
@@ -44,7 +45,7 @@ export function ToolRow({ message }: { message: ChatMessage }) {
   const toolName = message.author.kind === "tool" ? message.author.toolName : "";
   const Icon = TOOL_ICON[toolName] ?? Terminal;
   return (
-    <div className="flex items-center gap-2 px-1 py-0.5 text-[11.5px] text-mist-500">
+    <div className="flex items-center gap-2 px-1 py-0.5 text-xs text-mist-500">
       <Icon size={12} className="shrink-0" aria-label={toolName} />
       <span className={cx("min-w-0 flex-1 truncate font-mono", message.status === "error" && "text-mist-500/70")} title={message.text}>
         {message.text}
@@ -72,7 +73,7 @@ function PinBox({ message, onClose }: { message: ChatMessage; onClose: () => voi
   };
   return (
     <div className="mt-1.5 space-y-1.5 rounded-lg bg-ink-900/90 p-2 ring-1 ring-signal/30">
-      <p className="text-[11px] text-mist-500">Pin to the team notes (every agent reads them)</p>
+      <p className="text-xs text-mist-500">Pin to the team notes (every agent reads them)</p>
       <textarea
         className="field min-h-14 resize-y text-xs"
         value={text}
@@ -82,7 +83,7 @@ function PinBox({ message, onClose }: { message: ChatMessage; onClose: () => voi
         onChange={(e) => setText(e.target.value)}
       />
       <div className="flex items-center gap-2">
-        <span className={cx("text-[11px] tabular-nums", text.length >= CONFIG.noteMaxChars ? "text-warn" : "text-mist-500")}>
+        <span className={cx("text-xs tabular-nums", text.length >= CONFIG.noteMaxChars ? "text-warn" : "text-mist-500")}>
           {text.length}/{CONFIG.noteMaxChars}
         </span>
         <ErrorLine error={error} />
@@ -117,7 +118,7 @@ export function MessageBubble({ message, header }: { message: ChatMessage; heade
 
   if (message.author.kind === "tool") return <ToolRow message={message} />;
   if (message.author.kind === "system") {
-    return <p className={cx("px-4 py-1 text-center text-[11.5px]", message.status === "error" ? "text-bad/90" : "text-mist-500")}>{message.text}</p>;
+    return <p className={cx("px-4 py-1 text-center text-xs", message.status === "error" ? "text-bad" : "text-mist-500")}>{message.text}</p>;
   }
 
   const mine = message.author.kind === "user";
@@ -129,22 +130,24 @@ export function MessageBubble({ message, header }: { message: ChatMessage; heade
     <div className={cx("group flex flex-col", mine ? "items-end" : "items-start")}>
       {header}
       {fromAgent !== null && (
-        <span className="mb-1 flex items-center gap-1.5 text-[11px] text-mist-500">
+        <span className="mb-1 flex items-center gap-1.5 text-xs text-mist-500">
           <Avatar agent={fromAgent} size={16} />
           From {fromAgent.name}
         </span>
       )}
-      <div className="relative max-w-[92%]">
+      <div className={cx("relative", mine ? "max-w-[85%]" : "w-full")}>
         <div
           className={cx(
-            "rounded-2xl px-3 py-2 text-[13px]",
-            mine ? "rounded-br-md bg-signal/15 text-mist-100" : "rounded-bl-md bg-ink-800/90 ring-1 ring-mist-500/10",
+            "text-[14px] leading-[22px] text-mist-100",
+            mine && "rounded-xl bg-ink-700 px-3.5 py-2.5",
+            // What a teammate passed on: boxed, so it reads apart from the agent's own reply.
+            message.author.kind === "handoff" && "rounded-xl border border-[var(--hairline)] bg-ink-850 px-3.5 py-2.5 text-mist-300",
             queued && "opacity-70",
-            message.status === "error" && !mine && "ring-bad/30",
+            message.status === "error" && !mine && "border-l-2 border-bad/60 pl-3",
           )}
         >
           {mine ? (
-            <p className="whitespace-pre-wrap break-words leading-relaxed">{message.text}</p>
+            <p className="whitespace-pre-wrap break-words">{message.text}</p>
           ) : message.text === "" && streaming ? (
             <span className="caret text-mist-500" aria-label="Typing" />
           ) : (
@@ -170,7 +173,7 @@ export function MessageBubble({ message, header }: { message: ChatMessage; heade
           </button>
         )}
       </div>
-      <div className="mt-0.5 flex items-center gap-2 px-1 text-[10.5px] text-mist-500">
+      <div className={cx("mt-1 flex items-center gap-2 text-xs text-mist-500", !mine && "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100")}>
         {queued ? (
           <>
             <span className="text-warn">Waiting</span>

@@ -26,13 +26,13 @@ export function Roster({ compact = false }: { compact?: boolean }) {
             <Avatar agent={agent} size={compact ? 26 : 30} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-medium">{agent.name}</span>
-              <span className="block truncate text-[11px] text-mist-500">
+              <span className="block truncate text-xs text-mist-500">
                 {ROLE_DEFINITIONS[agent.role].roleLabel}
                 {!compact && ` · ${agent.model} · ${agent.effort ?? "default"}`}
               </span>
             </span>
             {agent.queuedCount > 0 && (
-              <span className="rounded-md bg-ink-700 px-1.5 py-0.5 text-[10.5px] text-mist-300" title="Messages waiting">
+              <span className="rounded-md bg-ink-700 px-1.5 py-0.5 text-xs text-mist-300" title="Messages waiting">
                 +{agent.queuedCount}
               </span>
             )}
@@ -79,7 +79,7 @@ export function OverviewPanel() {
       </Section>
 
       {tasks.length > 0 && (
-        <Section title="Current task" aside={waiting > 0 && <span className="text-[11px] text-mist-500">{waiting} waiting</span>}>
+        <Section title="Current task" aside={waiting > 0 && <span className="text-xs text-mist-500">{waiting} waiting</span>}>
           {current !== null ? <TaskCard task={current} /> : <p className="text-xs text-mist-500">No task running.</p>}
         </Section>
       )}

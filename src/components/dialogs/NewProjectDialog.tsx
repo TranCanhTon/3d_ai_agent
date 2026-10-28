@@ -85,7 +85,7 @@ export function NewProjectDialog() {
       width={600}
       footer={
         <div className="flex items-center gap-3">
-          <p className="text-[11px] text-mist-500">A project gets its own team of six agents and a notes file in .agentworld/.</p>
+          <p className="text-xs text-mist-500">A project gets its own team of six agents and a notes file in .agentworld/.</p>
           <button type="button" className="btn btn-quiet ml-auto" onClick={() => useWorldStore.getState().setDialog(null)}>
             Cancel
           </button>
@@ -101,7 +101,7 @@ export function NewProjectDialog() {
             <ArrowUp size={13} />
             Up
           </button>
-          <nav aria-label="Folder path" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 font-mono text-[11.5px] text-mist-300">
+          <nav aria-label="Folder path" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 font-mono text-xs text-mist-300">
             {listing !== null &&
               crumbs(listing.path).map((crumb, index, all) => (
                 <span key={crumb.path} className="flex items-center gap-0.5">
@@ -138,12 +138,12 @@ export function NewProjectDialog() {
                     {entry.name}
                   </button>
                   {entry.isGitRepo && (
-                    <span className="inline-flex items-center gap-1 rounded bg-ok/10 px-1.5 py-0.5 text-[10px] font-medium text-ok">
+                    <span className="inline-flex items-center gap-1 rounded bg-ok/10 px-1.5 py-0.5 text-xs font-medium text-ok">
                       <GitBranch size={10} />
                       git
                     </span>
                   )}
-                  {reason !== null && <span className="shrink-0 text-[10.5px] text-mist-500">{reason}</span>}
+                  {reason !== null && <span className="shrink-0 text-xs text-mist-500">{reason}</span>}
                   <button type="button" className="btn btn-sm btn-quiet shrink-0" aria-label={`Open ${entry.name}`} onClick={() => browse(entry.path)}>
                     Open
                   </button>
@@ -156,7 +156,7 @@ export function NewProjectDialog() {
 
       {chosen !== null && (
         <div className="space-y-3">
-          <p className="break-all font-mono text-[11.5px] text-mist-300">{chosen.path}</p>
+          <p className="break-all font-mono text-xs text-mist-300">{chosen.path}</p>
           <label className="block space-y-1.5">
             <span className="eyebrow">Name</span>
             <input className="field" maxLength={CONFIG.projectNameMaxChars} value={name} onChange={(e) => setName(e.target.value)} />

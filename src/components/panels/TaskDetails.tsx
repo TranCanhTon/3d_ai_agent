@@ -1,14 +1,21 @@
 "use client";
 
+// One task: status, the question box or Resume, the workflow, the plan and the
+// team's work as one thread (my request, then each agent's reply in order).
+
 import { Check, ChevronRight, CircleAlert, CircleCheck, CircleX, Play, Send } from "lucide-react";
-import { useState } from "react";
-import { getBackend } from "@/client/backendClient.ts";
+import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
+import { ensureChatPage, getBackend } from "@/client/backendClient.ts";
 import { CONFIG } from "@/shared/config.ts";
-import { AGENT_ROLES, ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
+import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
+import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
 import type { Task, WorkflowSignal } from "@/shared/domain/taskTypes.ts";
 import { canResume, workflowSteps, type StepState } from "@/shared/ui/present.ts";
-import { errorText, useAgent, useConnected } from "../hooks.ts";
-import { Avatar, Badge, ClockTime, ConfirmButton, cx, ErrorLine, Markdown, ProgressBar, RelativeTime, Section } from "../ui.tsx";
+import { chatKey, useWorldStore } from "@/state/useWorldStore.ts";
+import { errorText, useAgent, useConnected, useProjectAgents } from "../hooks.ts";
+import { Avatar, Badge, ClockTime, ConfirmButton, cx, Empty, ErrorLine, Markdown, ProgressBar, RelativeTime, Section } from "../ui.tsx";
+import { MessageBubble } from "./Messages.tsx";
 import { PriorityTag, progressColor, toneOf } from "./TaskCard.tsx";
 
 const SIGNAL_LABEL: Record<WorkflowSignal, string> = {
@@ -40,7 +47,7 @@ function Workflow({ task }: { task: Task }) {
       {steps.map((step, index) => (
         <li key={step.phase} className="flex items-center gap-1">
           <span
-            className={cx("rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1", STEP_STYLE[step.state])}
+            className={cx("rounded-md px-1.5 py-0.5 text-xs font-medium ring-1", STEP_STYLE[step.state])}
             aria-current={step.state === "current" ? "step" : undefined}
             title={step.state === "skipped" ? "Skipped: no research questions" : step.state}
           >
@@ -55,6 +62,8 @@ function Workflow({ task }: { task: Task }) {
 
 function QuestionBox({ task }: { task: Task }) {
   const connected = useConnected();
+  // The step's agent asked (any agent may, not only sONion Ring).
+  const asker = useAgent(task.assignedAgentId);
   const [answer, setAnswer] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -72,7 +81,10 @@ function QuestionBox({ task }: { task: Task }) {
   };
   return (
     <div className="space-y-2 rounded-xl bg-warn/10 p-3 ring-1 ring-warn/40">
-      <p className="eyebrow !text-warn">Needs your answer</p>
+      <p className="flex items-center gap-2 text-[13px] font-semibold text-warn">
+        {asker !== null && <Avatar agent={asker} size={20} />}
+        {asker === null ? "A question for you" : `${asker.name} asks you`}
+      </p>
       <Markdown text={task.question ?? ""} />
       <textarea
         className="field min-h-16 resize-y"
@@ -99,46 +111,70 @@ function QuestionBox({ task }: { task: Task }) {
   );
 }
 
-function AgentOutputs({ task }: { task: Task }) {
-  const [open, setOpen] = useState<string | null>(null);
-  const roles = AGENT_ROLES.filter((role) => task.outputs[role] !== undefined);
-  if (roles.length === 0) return null;
+const NO_MESSAGES: ChatMessage[] = [];
+
+const ANSWER_HEADING = "Answer to your question:\n";
+
+/** My answer as I typed it, out of the text the pipeline sends (null for the intake handoff). */
+function myAnswer(message: ChatMessage): ChatMessage | null {
+  const start = message.text.indexOf(ANSWER_HEADING);
+  if (start === -1) return null;
+  const rest = message.text.slice(start + ANSWER_HEADING.length);
+  const end = rest.lastIndexOf("\n\nNow ");
+  return { ...message, text: (end === -1 ? rest : rest.slice(0, end)).trim() };
+}
+
+/**
+ * The task as one thread: every agent's replies and tool lines and my answers,
+ * oldest first. Handoffs are left out (they repeat the reply they pass on), and so
+ * is the intake text (the request is shown above).
+ */
+function TaskThread({ task }: { task: Task }) {
+  const agents = useProjectAgents();
+  const connected = useConnected();
+  const lists = useWorldStore(useShallow((s) => agents.map((a) => s.chats[chatKey(a.id, "tasks")] ?? NO_MESSAGES)));
+
+  useEffect(() => {
+    if (connected) for (const agent of agents) ensureChatPage(agent.id, "tasks", null);
+  }, [agents, connected]);
+
+  const messages = useMemo(
+    () =>
+      lists
+        .flat()
+        .filter((m) => m.taskId === task.id && m.author.kind !== "handoff")
+        .flatMap((m) => (m.author.kind === "user" ? (myAnswer(m) ?? []) : [m]))
+        .sort((a, b) => a.createdAt - b.createdAt),
+    [lists, task.id],
+  );
+
+  if (messages.length === 0) return <Empty>The team has not started on this task yet.</Empty>;
   return (
-    <Section title="Agent outputs">
-      <div className="space-y-1.5">
-        {roles.map((role) => {
-          const expanded = open === role;
-          return (
-            <div key={role} className="well rounded-lg">
-              <button
-                type="button"
-                aria-expanded={expanded}
-                onClick={() => setOpen(expanded ? null : role)}
-                className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs"
-              >
-                <ChevronRight size={13} className={cx("text-mist-500 transition-transform", expanded && "rotate-90")} />
-                <OutputAuthor taskProject={task.projectId} role={role} />
-              </button>
-              {expanded && (
-                <div className="border-t border-mist-500/10 px-3 py-2.5">
-                  <Markdown text={task.outputs[role] ?? ""} />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </Section>
+    <div className="space-y-1.5">
+      {messages.map((message, index) => {
+        const previous = messages[index - 1];
+        // A name above each agent's turn (its tool lines and reply); 16px between turns, 6px inside one.
+        const mine = message.author.kind === "user";
+        const newTurn = previous === undefined || previous.agentId !== message.agentId || mine !== (previous.author.kind === "user");
+        return (
+          <div key={message.id} className={cx(newTurn && index > 0 && "pt-2.5")}>
+            {newTurn && !mine && <Speaker agentId={message.agentId} />}
+            <MessageBubble message={message} />
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
-function OutputAuthor({ taskProject, role }: { taskProject: string; role: (typeof AGENT_ROLES)[number] }) {
-  const agent = useAgent(`${taskProject}:${role}`);
+function Speaker({ agentId }: { agentId: string }) {
+  const agent = useAgent(agentId);
+  if (agent === null) return null;
   return (
-    <span className="flex items-center gap-2">
-      {agent !== null && <Avatar agent={agent} size={18} />}
-      <span className="font-medium">{agent?.name ?? ROLE_DEFINITIONS[role].name}</span>
-      <span className="text-mist-500">{ROLE_DEFINITIONS[role].roleLabel}</span>
+    <span className="mb-1 flex items-center gap-2 text-[13px] font-semibold text-mist-100">
+      <Avatar agent={agent} size={20} />
+      {agent.name}
+      <span className="font-normal text-mist-500">{ROLE_DEFINITIONS[agent.role].roleLabel}</span>
     </span>
   );
 }
@@ -161,18 +197,18 @@ export function TaskDetails({ task }: { task: Task }) {
           <Badge tone={tone.badge}>{tone.label}</Badge>
           <PriorityTag priority={task.priority} />
           {task.iteration > 0 && (
-            <span className={cx("text-[11px]", task.iteration > 1 ? "text-warn" : "text-mist-500")}>
+            <span className={cx("text-xs", task.iteration > 1 ? "text-warn" : "text-mist-500")}>
               Attempt {task.iteration}/{CONFIG.maxIterations}
             </span>
           )}
-          <span className="ml-auto text-[11px] text-mist-500">
+          <span className="ml-auto text-xs text-mist-500">
             created <RelativeTime at={task.createdAt} />
           </span>
         </div>
         <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
         {task.description !== "" && <p className="whitespace-pre-wrap text-xs leading-relaxed text-mist-300">{task.description}</p>}
         <ProgressBar value={task.progress} color={progressColor(task, agent === null ? null : ROLE_DEFINITIONS[agent.role].color)} label="Progress" />
-        {agent !== null && !ended && (
+        {agent !== null && !ended && task.blockedReason === null && (
           <p className="flex items-center gap-2 text-xs text-mist-300">
             <Avatar agent={agent} size={18} />
             {agent.name} · {agent.activity || "working"}
@@ -235,7 +271,7 @@ export function TaskDetails({ task }: { task: Task }) {
           <ol className="space-y-1">
             {task.subtasks.map((subtask, index) => (
               <li key={subtask.id} className="flex gap-2 text-xs">
-                <span className={cx("mt-px inline-flex size-4 shrink-0 items-center justify-center rounded text-[10px]", subtask.done ? "bg-ok/20 text-ok" : "bg-ink-700 text-mist-500")}>
+                <span className={cx("mt-px inline-flex size-4 shrink-0 items-center justify-center rounded text-xs", subtask.done ? "bg-ok/20 text-ok" : "bg-ink-700 text-mist-500")}>
                   {subtask.done ? <Check size={11} /> : index + 1}
                 </span>
                 <span className="text-mist-300">{subtask.title}</span>
@@ -255,7 +291,9 @@ export function TaskDetails({ task }: { task: Task }) {
         </Section>
       )}
 
-      <AgentOutputs task={task} />
+      <Section title="Team thread">
+        <TaskThread task={task} />
+      </Section>
 
       {task.history.length > 0 && (
         <Section title="Timeline">

@@ -26,7 +26,7 @@ function Rows({ rows }: { rows: [string, ReactNode][] }) {
 }
 
 function List({ items }: { items: readonly string[] }) {
-  return <span className="font-mono text-[11px] leading-relaxed">{items.join(", ")}</span>;
+  return <span className="font-mono text-xs leading-relaxed">{items.join(", ")}</span>;
 }
 
 const QUALITY_SOURCE: Record<QualitySource, string> = {
@@ -92,7 +92,7 @@ export function SettingsPanel() {
 
       <Section title="Team">
         <div className="well overflow-hidden rounded-xl">
-          <table className="w-full text-left text-[11.5px]">
+          <table className="w-full text-left text-xs">
             <thead className="text-mist-500">
               <tr>
                 <th className="px-3 py-2 font-medium">Agent</th>
@@ -110,14 +110,14 @@ export function SettingsPanel() {
                         <Avatar agent={agent} size={20} />
                         <span>
                           <span className="block text-mist-100">{agent.name}</span>
-                          <span className="block text-[10.5px] text-mist-500">{role.roleLabel}</span>
-                          <span className="mt-0.5 block font-mono text-[10px] text-mist-500">{role.allowedTools.join(" ")}</span>
+                          <span className="block text-xs text-mist-500">{role.roleLabel}</span>
+                          <span className="mt-0.5 block font-mono text-xs text-mist-500">{role.allowedTools.join(" ")}</span>
                         </span>
                       </span>
                     </td>
                     <td className="px-2 py-2 text-mist-300">
                       {agent.model}
-                      <span className="block text-[10.5px] text-mist-500">{agent.effort ?? "default"}</span>
+                      <span className="block text-xs text-mist-500">{agent.effort ?? "default"}</span>
                     </td>
                     <td className="px-2 py-2 tabular-nums text-mist-300">{role.maxTurns}</td>
                   </tr>

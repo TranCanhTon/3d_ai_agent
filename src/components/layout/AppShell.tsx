@@ -1,7 +1,8 @@
 "use client";
 
-// The app: a full viewport world area (the 3D office) with the floating UI on top. The shell measures the floating parts and writes viewInsets
-// to the store so the camera can keep the office in the free area.
+// The app: the 3D office fills the window; a solid nav rail (left), top bar and
+// side panel (right, full height) sit on it. The shell measures them and writes
+// viewInsets to the store so the camera keeps the office in the free area.
 
 import { PanelRightOpen } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -16,7 +17,6 @@ import { PermissionStack } from "../permissions/PermissionStack.tsx";
 import { LoadingScreen } from "./LoadingScreen.tsx";
 import { NavRail } from "./NavRail.tsx";
 import { TopBar } from "./TopBar.tsx";
-import { CameraBar } from "@/world/CameraBar.tsx";
 import { DebugOverlay } from "@/world/DebugOverlay.tsx";
 
 const WorldCanvas = dynamic(() => import("@/world/WorldCanvas.tsx"), { ssr: false });
@@ -57,7 +57,7 @@ function useShortcuts() {
         if (store.dialog !== null) store.setDialog(null);
         else if (isTyping(event.target)) return;
         else {
-          store.requestCamera({ preset: "overview" });
+          store.requestCamera({ overview: true });
           if (store.selectedTaskId !== null) store.setSelectedTask(null);
           else if (store.selectedAgentId !== null) store.setSelectedAgent(null);
         }
@@ -97,30 +97,28 @@ export function AppShell() {
       >
         <WorldCanvas />
       </div>
-      <CameraBar />
       <DebugOverlay />
-      <div className="pointer-events-none absolute inset-0 flex gap-3 p-3">
+      <div className="pointer-events-none absolute inset-0 flex">
         <NavRail ref={nav} />
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex min-w-0 flex-1 flex-col">
           <TopBar ref={top} />
-          <div className="flex min-h-0 flex-1 gap-3">
-            <div className="relative min-w-0 flex-1">
-              <PermissionStack />
-              {collapsed && (
-                <button
-                  type="button"
-                  aria-label="Show the side panel"
-                  title="Show the side panel"
-                  onClick={() => useWorldStore.getState().setPanelCollapsed(false)}
-                  className="surface pointer-events-auto absolute bottom-0 right-0 inline-flex size-10 items-center justify-center rounded-xl text-mist-300 hover:text-mist-100"
-                >
-                  <PanelRightOpen size={18} />
-                </button>
-              )}
-            </div>
-            {!collapsed && <SidePanel ref={side} />}
+          {/* The free area over the office: permission cards and the show-panel button. */}
+          <div className="relative min-h-0 flex-1">
+            <PermissionStack />
+            {collapsed && (
+              <button
+                type="button"
+                aria-label="Show the side panel"
+                title="Show the side panel"
+                onClick={() => useWorldStore.getState().setPanelCollapsed(false)}
+                className="surface pointer-events-auto absolute bottom-4 right-4 inline-flex size-10 items-center justify-center rounded-lg text-mist-300 hover:bg-ink-700 hover:text-mist-100"
+              >
+                <PanelRightOpen size={18} />
+              </button>
+            )}
           </div>
         </div>
+        {!collapsed && <SidePanel ref={side} />}
       </div>
       {dialog === "task" && <NewTaskDialog />}
       {dialog === "project" && <NewProjectDialog />}

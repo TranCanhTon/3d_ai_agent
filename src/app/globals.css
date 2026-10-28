@@ -16,13 +16,23 @@
 
   --color-mist-100: #eef2f7;
   --color-mist-300: #b7c1cf;
-  --color-mist-500: #7c8797;
+  /* Lighter than before: 4.5:1 or better on ink-900, ink-800 and ink-700. */
+  --color-mist-500: #8b96a6;
 
   --color-signal: #7cc4d6;
   --color-signal-strong: #9ad7e6;
   --color-ok: #6fe3a4;
   --color-warn: #f2b46a;
   --color-bad: #ff8a7a;
+
+  /* Spacing on a 4px scale: space-1 4px, space-2 8px, space-3 12px, space-4 16px, space-6 24px. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  --hairline: rgb(183 193 207 / 0.08);
 }
 
 :root {
@@ -44,20 +54,16 @@ body {
 }
 
 @layer components {
+  /* Solid: nothing behind a surface shows through. */
   .surface {
-    background: linear-gradient(180deg, rgb(26 34 48 / 0.72), rgb(14 19 27 / 0.82));
-    border: 1px solid rgb(183 193 207 / 0.09);
-    box-shadow:
-      inset 0 1px 0 rgb(238 242 247 / 0.05),
-      0 18px 48px -12px rgb(0 0 0 / 0.6);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    background: var(--color-ink-900);
+    border: 1px solid var(--hairline);
   }
 
   /* A quieter box inside a surface. */
   .well {
-    background: rgb(10 14 20 / 0.55);
-    border: 1px solid rgb(183 193 207 / 0.07);
+    background: var(--color-ink-850);
+    border: 1px solid var(--hairline);
   }
 
   .scroll-thin {
@@ -65,12 +71,11 @@ body {
     scrollbar-color: var(--color-ink-600) transparent;
   }
 
+  /* Section labels: plain, small and quiet (no uppercase tracking). */
   .eyebrow {
-    font-size: 10.5px;
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--color-mist-500);
+    color: var(--color-mist-300);
   }
 
   .btn {
@@ -78,14 +83,14 @@ body {
     align-items: center;
     justify-content: center;
     gap: 0.4rem;
-    height: 2rem;
-    padding: 0 0.75rem;
-    border-radius: 0.5rem;
-    font-size: 0.8125rem;
+    height: 32px;
+    padding: 0 var(--space-3);
+    border-radius: 8px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     border: 1px solid rgb(183 193 207 / 0.14);
-    background: rgb(38 48 65 / 0.55);
+    background: var(--color-ink-800);
     color: var(--color-mist-100);
     transition:
       background-color 120ms ease,
@@ -93,18 +98,22 @@ body {
       color 120ms ease;
   }
   .btn:hover:not(:disabled) {
-    background: rgb(38 48 65 / 0.9);
+    background: var(--color-ink-700);
     border-color: rgb(183 193 207 / 0.24);
+  }
+  .btn:focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+    border-radius: 8px;
   }
   .btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
   .btn-sm {
-    height: 1.625rem;
-    padding: 0 0.55rem;
-    font-size: 0.75rem;
-    border-radius: 0.4rem;
+    height: 28px;
+    padding: 0 var(--space-2);
+    font-size: 12px;
   }
   .btn-primary {
     background: var(--color-signal);
@@ -126,7 +135,7 @@ body {
     color: var(--color-mist-300);
   }
   .btn-quiet:hover:not(:disabled) {
-    background: rgb(38 48 65 / 0.6);
+    background: var(--color-ink-700);
     border-color: transparent;
     color: var(--color-mist-100);
   }
@@ -144,9 +153,9 @@ body {
     width: 100%;
     border-radius: 0.5rem;
     border: 1px solid rgb(183 193 207 / 0.14);
-    background: rgb(6 8 12 / 0.6);
-    padding: 0.5rem 0.65rem;
-    font-size: 0.8125rem;
+    background: var(--color-ink-800);
+    padding: var(--space-2) var(--space-3);
+    font-size: 13px;
     color: var(--color-mist-100);
     transition: border-color 120ms ease;
   }
@@ -194,8 +203,8 @@ body {
 
   /* Agent text rendered from markdown. */
   .md {
-    font-size: 0.8125rem;
-    line-height: 1.55;
+    font-size: 14px;
+    line-height: 22px;
     overflow-wrap: anywhere;
   }
   .md > * + * {
@@ -245,14 +254,14 @@ body {
   }
   .md :not(pre) > code {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
-    background: rgb(38 48 65 / 0.7);
+    font-size: 12px;
+    background: var(--color-ink-700);
     border-radius: 0.3rem;
     padding: 0.08em 0.35em;
   }
   .md table {
     border-collapse: collapse;
-    font-size: 0.75rem;
+    font-size: 12px;
   }
   .md th,
   .md td {

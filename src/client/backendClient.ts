@@ -41,19 +41,13 @@ export function ensureChatPage(agentId: string, view: ChatView, chatId: string |
   loadChatPage(agentId, view, chatId).catch(warn("history load failed"));
 }
 
-export async function loadChatList(agentId: string): Promise<void> {
-  const chats = await getBackend().listChats({ agentId });
-  useWorldStore.getState().setChatList(agentId, chats);
-}
-
-/** Selects an agent (anywhere in the UI) and opens it in the Agents tab. */
+/** Selects an agent (anywhere in the UI, a desk too) and opens it in the Agents tab. */
 export function openAgent(agentId: string): void {
   const store = useWorldStore.getState();
   const agent = store.snapshot?.agents.find((a) => a.id === agentId);
   if (agent !== undefined && agent.projectId !== store.selectedProjectId) store.setSelectedProject(agent.projectId);
   store.setSelectedAgent(agentId);
   store.setActiveTab("agents");
-  if (store.chatLists[agentId] === undefined) loadChatList(agentId).catch(warn("chat list load failed"));
 }
 
 export function openTask(taskId: string): void {
@@ -62,18 +56,6 @@ export function openTask(taskId: string): void {
   if (task !== undefined && task.projectId !== store.selectedProjectId) store.setSelectedProject(task.projectId);
   store.setSelectedTask(taskId);
   store.setActiveTab("tasks");
-}
-
-/** Goes back to an earlier chat: the server makes it active so my next message resumes its session. */
-export async function switchChat(agentId: string, chatId: string): Promise<void> {
-  await getBackend().openChat({ agentId, chatId });
-  ensureChatPage(agentId, "chat", chatId);
-}
-
-export async function startNewChat(agentId: string): Promise<void> {
-  const chat = await getBackend().newChat({ agentId });
-  await loadChatList(agentId);
-  ensureChatPage(agentId, "chat", chat.id);
 }
 
 /** Connects (with automatic reconnects) and mirrors events/snapshots into the store. Returns a disposer. */
@@ -88,10 +70,8 @@ export function connectBackend(): () => void {
     instance.subscribeConnectionStatus((status) => {
       store().setConnectionStatus(status);
       if (status === "open") {
-        // The server may have restarted with an empty memory: reload what is on screen.
+        // The server may have restarted with an empty memory: views reload what they show.
         store().resetChats();
-        const selected = store().selectedAgentId;
-        if (selected !== null) loadChatList(selected).catch(warn("chat list load failed"));
       }
     }),
   ];

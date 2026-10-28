@@ -20,12 +20,13 @@ const TITLES: Record<SideTab, string> = {
   settings: "Settings",
 };
 
+/** Solid, full height, flush right: nothing of the office shows through it. */
 export const SidePanel = forwardRef<HTMLElement>(function SidePanel(_props, ref) {
   const tab = useWorldStore((s) => s.activeTab);
   return (
-    <aside ref={ref} aria-label={TITLES[tab]} className="surface pointer-events-auto flex w-[400px] shrink-0 flex-col overflow-hidden rounded-2xl">
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-mist-500/10 pl-4 pr-2">
-        <h2 className="text-sm font-semibold">{TITLES[tab]}</h2>
+    <aside ref={ref} aria-label={TITLES[tab]} className="pointer-events-auto flex h-full w-[440px] shrink-0 flex-col border-l border-[var(--hairline)] bg-ink-900">
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--hairline)] pl-4 pr-2">
+        <h2 className="text-[15px] font-semibold">{TITLES[tab]}</h2>
         <IconButton label="Hide the side panel" onClick={() => useWorldStore.getState().setPanelCollapsed(true)}>
           <PanelRightClose size={16} />
         </IconButton>
@@ -44,5 +45,5 @@ export const SidePanel = forwardRef<HTMLElement>(function SidePanel(_props, ref)
 
 /** The scrolling body most tabs use. */
 export function PanelBody({ children }: { children: React.ReactNode }) {
-  return <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto p-4">{children}</div>;
+  return <div className="scroll-thin min-h-0 flex-1 space-y-6 overflow-y-auto p-4">{children}</div>;
 }

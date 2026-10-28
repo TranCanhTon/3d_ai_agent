@@ -44,7 +44,7 @@ export function NewTaskDialog() {
       title="New task"
       footer={
         <div className="flex items-center gap-3">
-          <p className="text-[11px] leading-snug text-mist-500">Runs on your Claude Pro plan. Agents ask before editing files or running commands.</p>
+          <p className="text-xs leading-snug text-mist-500">Runs on your Claude Pro plan. Agents ask before editing files or running commands.</p>
           <button type="button" className="btn btn-quiet ml-auto" onClick={() => useWorldStore.getState().setDialog(null)}>
             Cancel
           </button>

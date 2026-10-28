@@ -27,7 +27,7 @@ export function toneOf(task: Task): { label: string; badge: BadgeTone } {
 const PRIORITY_TONE: Record<TaskPriority, BadgeTone> = { low: "neutral", medium: "neutral", high: "warn", critical: "bad" };
 
 export function PriorityTag({ priority }: { priority: TaskPriority }) {
-  return <Badge tone={PRIORITY_TONE[priority]}>{priority}</Badge>;
+  return <Badge tone={PRIORITY_TONE[priority]}>{priority.charAt(0).toUpperCase() + priority.slice(1)}</Badge>;
 }
 
 /** Progress colour: the working agent's, green when done, amber paused, red failed or cancelled. */
@@ -56,7 +56,7 @@ export function TaskCard({ task, selected = false }: { task: Task; selected?: bo
       <div className="flex items-center gap-1.5">
         <Badge tone={tone.badge}>{tone.label}</Badge>
         <PriorityTag priority={task.priority} />
-        <span className="ml-auto text-[11px] text-mist-500">
+        <span className="ml-auto text-xs text-mist-500">
           <RelativeTime at={task.updatedAt} />
         </span>
       </div>
@@ -65,7 +65,7 @@ export function TaskCard({ task, selected = false }: { task: Task; selected?: bo
         {task.description !== "" && <p className="mt-0.5 line-clamp-2 text-xs text-mist-500">{task.description}</p>}
       </div>
       <ProgressBar value={task.progress} color={progressColor(task, agent === null ? null : ROLE_DEFINITIONS[agent.role].color)} label={`${task.title} progress`} />
-      <div className="flex items-center gap-2 text-[11px] text-mist-300">
+      <div className="flex items-center gap-2 text-xs text-mist-300">
         {agent !== null && task.endReason === null && <Avatar agent={agent} size={18} />}
         <span>
           {phaseLabel(task)}

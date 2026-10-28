@@ -33,7 +33,7 @@ function NoteRow({ note, agentColor }: { note: NoteLine; agentColor: string | nu
       <span className="min-w-0 flex-1 text-xs leading-relaxed">
         <span className="text-mist-100">{note.text}</span>
         {note.by !== null && (
-          <span className="block text-[10.5px] text-mist-500">
+          <span className="block text-xs text-mist-500">
             {note.by} · {note.date}
           </span>
         )}
@@ -74,7 +74,7 @@ function AddNote({ projectId, disabled }: { projectId: string; disabled: boolean
         }}
       />
       <div className="flex items-center gap-2">
-        <span className={cx("text-[11px] tabular-nums", text.length >= CONFIG.noteMaxChars ? "text-warn" : "text-mist-500")}>
+        <span className={cx("text-xs tabular-nums", text.length >= CONFIG.noteMaxChars ? "text-warn" : "text-mist-500")}>
           {text.length}/{CONFIG.noteMaxChars}
         </span>
         <ErrorLine error={error} />

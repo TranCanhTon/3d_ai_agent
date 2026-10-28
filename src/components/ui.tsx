@@ -52,7 +52,7 @@ export function statusLabel(status: AgentStatus): string {
 export function StatusPill({ status }: { status: AgentStatus }) {
   const s = STATUS[status];
   return (
-    <span className={cx("inline-flex items-center gap-1.5 rounded-full bg-ink-800/80 px-2 py-0.5 text-[11px] font-medium", s.tone)}>
+    <span className={cx("inline-flex items-center gap-1.5 rounded-full bg-ink-800/80 px-2 py-0.5 text-xs font-medium", s.tone)}>
       <span className={cx("size-1.5 rounded-full bg-current", s.pulse && "pulse-dot")} />
       {s.label}
     </span>
@@ -71,7 +71,7 @@ const BADGE: Record<BadgeTone, string> = {
 
 export function Badge({ tone = "neutral", children, title }: { tone?: BadgeTone; children: ReactNode; title?: string }) {
   return (
-    <span title={title} className={cx("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide", BADGE[tone])}>
+    <span title={title} className={cx("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-semibold", BADGE[tone])}>
       {children}
     </span>
   );
@@ -112,7 +112,7 @@ export function Segmented<T extends string>({
           onClick={() => onChange(option.value)}
           className={cx(
             "rounded-md font-medium transition-colors",
-            size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs",
+            size === "sm" ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-xs",
             value === option.value ? "bg-ink-600 text-mist-100" : "text-mist-500 hover:text-mist-300",
           )}
         >
@@ -252,7 +252,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
   }, [copied]);
   return (
     <div className="group relative">
-      <pre ref={ref} className="scroll-thin overflow-x-auto rounded-lg bg-ink-950/80 p-3 font-mono text-[11.5px] leading-relaxed ring-1 ring-mist-500/10">
+      <pre ref={ref} className="scroll-thin overflow-x-auto rounded-lg bg-ink-950/80 p-3 font-mono text-xs leading-relaxed ring-1 ring-mist-500/10">
         {children}
       </pre>
       <button

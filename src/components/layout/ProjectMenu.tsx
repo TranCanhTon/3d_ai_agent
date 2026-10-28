@@ -60,7 +60,7 @@ export function ProjectMenu() {
           <span className="eyebrow block leading-none">Project</span>
           <span className="mt-1 flex items-center gap-1.5 truncate text-sm font-medium">
             {project?.name ?? "No project"}
-            {project?.archived && <span className="text-[10px] font-semibold uppercase text-warn">Archived</span>}
+            {project?.archived && <span className="text-xs font-semibold uppercase text-warn">Archived</span>}
           </span>
         </span>
         <ChevronDown size={14} className="shrink-0 text-mist-500" />
@@ -79,7 +79,7 @@ export function ProjectMenu() {
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm">{p.name}</span>
-                <span className="block truncate font-mono text-[10.5px] text-mist-500">{p.rootPath}</span>
+                <span className="block truncate font-mono text-xs text-mist-500">{p.rootPath}</span>
               </span>
               {p.id === project?.id && <Check size={14} className="shrink-0 text-signal" />}
             </button>

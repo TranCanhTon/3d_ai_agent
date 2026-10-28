@@ -6,11 +6,11 @@
 import { create } from "zustand";
 import { CONFIG } from "@/shared/config.ts";
 import type { ConnectionStatus } from "@/shared/backend/AgentBackend.ts";
-import type { Chat, ChatMessage } from "@/shared/domain/chatTypes.ts";
+import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
 import { eventPayloadSchemas, readPayload } from "@/shared/events/eventPayloads.ts";
 import type { AgentEvent } from "@/shared/events/eventTypes.ts";
 import type { ChatView, WorldSnapshot } from "@/shared/protocol/protocol.ts";
-import type { CameraPresetId, Vec3 } from "@/shared/ui/cameraPresets.ts";
+import type { Vec3 } from "@/shared/ui/cameraView.ts";
 
 /** Key in `chats`: one of my chats with an agent, or the agent's task messages (its Tasks tab). */
 export function chatKey(agentId: string, view: ChatView, chatId: string | null = null): string {
@@ -23,8 +23,6 @@ function messageKey(message: ChatMessage): string {
 
 export const SIDE_TABS = ["overview", "agents", "tasks", "activity", "notes", "settings"] as const;
 export type SideTab = (typeof SIDE_TABS)[number];
-export const AGENT_TABS = ["chat", "tasks", "activity"] as const;
-export type AgentTab = (typeof AGENT_TABS)[number];
 export type Dialog = "task" | "project" | null;
 
 /** Pixels the floating UI covers on each side of the world area (for the 3D camera). */
@@ -39,12 +37,11 @@ export type Quality = "high" | "low";
 /** What set the quality: the start rule, my choice in Settings, the frame rate drop, or ?quality= in the URL. */
 export type QualitySource = "default" | "user" | "auto" | "url";
 
-/** A camera move; a new nonce starts it. A preset, or a point to focus at `distance`. */
+/** A camera move; a new nonce starts it. Back to the overview, or a point on the floor to focus. */
 export interface CameraRequest {
   nonce: number;
-  preset?: CameraPresetId;
+  overview?: true;
   focus?: Vec3;
-  distance?: number;
 }
 
 function prefersReducedMotion(): boolean {
@@ -95,7 +92,6 @@ export interface WorldStore {
   selectedAgentId: string | null;
   selectedTaskId: string | null;
   activeTab: SideTab;
-  agentTab: AgentTab;
   panelCollapsed: boolean;
   dialog: Dialog;
   viewInsets: ViewInsets;
@@ -111,16 +107,12 @@ export interface WorldStore {
   /** "station:<id>" under the pointer. */
   hovered: string | null;
   cameraRequest: CameraRequest | null;
-  /** The preset the camera went to last; null after a drag or a focus. */
-  activePreset: CameraPresetId | null;
   /** The agent whose desk has the floor outline. Follows the selection; a click on empty space clears it. */
   deskHighlight: string | null;
 
   /** Per chatKey, oldest first. */
   chats: Record<string, ChatMessage[]>;
   chatPages: Record<string, ChatPage>;
-  /** Each agent's chats, newest first (loaded on demand, then kept current by chat.* events). */
-  chatLists: Record<string, Chat[]>;
   /** Newest first, at most maxStoredEvents. */
   events: AgentEvent[];
 
@@ -132,7 +124,6 @@ export interface WorldStore {
   setSelectedAgent(agentId: string | null): void;
   setSelectedTask(taskId: string | null): void;
   setActiveTab(tab: SideTab): void;
-  setAgentTab(tab: AgentTab): void;
   setPanelCollapsed(collapsed: boolean): void;
   setDialog(dialog: Dialog): void;
   setViewInsets(insets: ViewInsets): void;
@@ -141,11 +132,9 @@ export interface WorldStore {
   setSceneReady(): void;
   setHovered(hovered: string | null): void;
   requestCamera(request: Omit<CameraRequest, "nonce">): void;
-  setActivePreset(preset: CameraPresetId | null): void;
   setDeskHighlight(agentId: string | null): void;
   /** Merges a loaded history page (older messages first) with messages that arrived live. */
   setHistory(key: string, messages: ChatMessage[], hasMore: boolean): void;
-  setChatList(agentId: string, chats: Chat[]): void;
   /** Forget chats (after a reconnect the server may have restarted). */
   resetChats(): void;
 }
@@ -210,20 +199,6 @@ function applyChatEvent(chats: Record<string, ChatMessage[]>, event: AgentEvent)
   return chats;
 }
 
-function sortChats(chats: Chat[]): Chat[] {
-  return [...chats].sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
-}
-
-function applyChatListEvent(lists: Record<string, Chat[]>, event: AgentEvent): Record<string, Chat[]> {
-  const payload = readPayload(event, ["chat.started", "chat.updated"], eventPayloadSchemas.chat);
-  if (payload === null) return lists;
-  const { chat } = payload;
-  const current = lists[chat.agentId];
-  // Not loaded yet: the list is fetched whole when the agent is opened.
-  if (current === undefined) return lists;
-  return { ...lists, [chat.agentId]: sortChats([chat, ...current.filter((c) => c.id !== chat.id)]) };
-}
-
 // Snapshot throttling state lives outside React.
 let lastCommitAt = 0;
 let pendingSnapshot: WorldSnapshot | null = null;
@@ -251,8 +226,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     selectedProjectId: null,
     selectedAgentId: null,
     selectedTaskId: null,
-    activeTab: "overview",
-    agentTab: "chat",
+    activeTab: "tasks",
     panelCollapsed: false,
     dialog: null,
     viewInsets: { left: 0, top: 0, right: 0, bottom: 0 },
@@ -262,11 +236,9 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     sceneReady: false,
     hovered: null,
     cameraRequest: null,
-    activePreset: "overview",
     deskHighlight: null,
     chats: {},
     chatPages: {},
-    chatLists: {},
     events: [],
 
     setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
@@ -289,7 +261,6 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
       set((state) => ({
         events: [event, ...state.events].slice(0, CONFIG.maxStoredEvents),
         chats: applyChatEvent(state.chats, event),
-        chatLists: applyChatListEvent(state.chatLists, event),
       })),
 
     setSelectedProject: (selectedProjectId) => {
@@ -309,7 +280,6 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     setSelectedAgent: (selectedAgentId) => set({ selectedAgentId, deskHighlight: selectedAgentId }),
     setSelectedTask: (selectedTaskId) => set({ selectedTaskId }),
     setActiveTab: (activeTab) => set({ activeTab, panelCollapsed: false }),
-    setAgentTab: (agentTab) => set({ agentTab }),
     setPanelCollapsed: (panelCollapsed) => set({ panelCollapsed }),
     setDialog: (dialog) => set({ dialog }),
     setViewInsets: (viewInsets) => {
@@ -325,14 +295,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     setHovered: (hovered) => {
       if (get().hovered !== hovered) set({ hovered });
     },
-    requestCamera: (request) =>
-      set((state) => ({
-        cameraRequest: { ...request, nonce: (state.cameraRequest?.nonce ?? 0) + 1 },
-        activePreset: request.preset ?? null,
-      })),
-    setActivePreset: (activePreset) => {
-      if (get().activePreset !== activePreset) set({ activePreset });
-    },
+    requestCamera: (request) => set((state) => ({ cameraRequest: { ...request, nonce: (state.cameraRequest?.nonce ?? 0) + 1 } })),
     setDeskHighlight: (deskHighlight) => {
       if (get().deskHighlight !== deskHighlight) set({ deskHighlight });
     },
@@ -348,8 +311,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
         };
       }),
 
-    setChatList: (agentId, chats) => set((state) => ({ chatLists: { ...state.chatLists, [agentId]: sortChats(chats) } })),
 
-    resetChats: () => set({ chats: {}, chatPages: {}, chatLists: {} }),
+    resetChats: () => set({ chats: {}, chatPages: {} }),
   };
 });

@@ -1,8 +1,10 @@
 "use client";
 
-// Blue hour outside, warm inside: cool moonlight with the only shadow map, a
-// hemisphere fill, warm point lights over the desk clusters and the hub, and
-// (high quality only) a procedural environment for reflections.
+// Evening outside, a clearly lit office inside: cool moonlight with the only
+// shadow map, a bright hemisphere and ambient fill, soft daylight from the ceiling
+// panels (a light from straight above, no shadows), warm lights over the desk
+// clusters, the hub and the walkway, and (high quality only) a procedural
+// environment for reflections.
 
 import { useThree } from "@react-three/fiber";
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -13,13 +15,15 @@ import { useWorldStore } from "@/state/useWorldStore.ts";
 
 const WARM = "#ffb877";
 
-/** Over each desk cluster, the hub and the shared places. */
+/** Over each desk cluster, the hub, the shared places and the walkway. */
 const WARM_LIGHTS: { position: [number, number, number]; intensity: number; distance: number }[] = [
   { position: [-8.25, 2.8, -3.4], intensity: 16, distance: 10 },
   { position: [8.25, 2.8, -3.4], intensity: 16, distance: 10 },
   { position: [HUB_CENTER.x, 2.8, HUB_CENTER.z], intensity: 10, distance: 8 },
   { position: [STATIONS.collab.center.x, 2.6, STATIONS.collab.center.z], intensity: 9, distance: 7.5 },
   { position: [STATIONS.lounge.center.x, 2.6, STATIONS.lounge.center.z], intensity: 9, distance: 7.5 },
+  { position: [-6, 3, 2.8], intensity: 8, distance: 9 },
+  { position: [6, 3, 2.8], intensity: 8, distance: 9 },
 ];
 
 /** Light panels for reflections: a warm one overhead, a cool one and a warm band at the window side. */
@@ -90,7 +94,10 @@ export function Lighting() {
 
   return (
     <>
-      <hemisphereLight args={["#7a98d8", "#3a2a1c", 1.1]} />
+      <hemisphereLight args={["#dfe7f5", "#5a4a3a", 1.6]} />
+      <ambientLight color="#f3efe8" intensity={0.5} />
+      {/* The ceiling panels: soft light from straight above. */}
+      <directionalLight color="#fff4e6" intensity={1.1} position={[0, 20, 0.5]} />
       <directionalLight
         ref={moon}
         color="#b9cdf5"

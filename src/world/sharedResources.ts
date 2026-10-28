@@ -108,18 +108,18 @@ export const geometry = {
 const standard = (key: string, params: THREE.MeshStandardMaterialParameters) => () => sharedMaterial(key, () => new THREE.MeshStandardMaterial(params));
 
 export const material = {
-  wall: standard("wall", { color: "#1c2533", roughness: 0.9, metalness: 0.05 }),
+  wall: standard("wall", { color: "#5b6573", roughness: 0.9, metalness: 0.05 }),
   mullion: standard("mullion", { color: "#0b0f15", roughness: 0.5, metalness: 0.6 }),
   metal: standard("metal", { color: "#5d6878", roughness: 0.35, metalness: 0.8 }),
   darkMetal: standard("darkMetal", { color: "#252d39", roughness: 0.45, metalness: 0.7 }),
-  desk: standard("desk", { color: "#1a2230", roughness: 0.55, metalness: 0.15 }),
-  chair: standard("chair", { color: "#232c3a", roughness: 0.8, metalness: 0.05 }),
+  desk: standard("desk", { color: "#3a4454", roughness: 0.55, metalness: 0.15 }),
+  chair: standard("chair", { color: "#3b4658", roughness: 0.8, metalness: 0.05 }),
   monitor: standard("monitor", { color: "#0b0f15", roughness: 0.4, metalness: 0.5 }),
-  pot: standard("pot", { color: "#2c323c", roughness: 0.7, metalness: 0.1 }),
+  pot: standard("pot", { color: "#59606b", roughness: 0.7, metalness: 0.1 }),
   leaf: standard("leaf", { color: "#ffffff", roughness: 0.75, metalness: 0, flatShading: true }),
-  sofa: standard("sofa", { color: "#2b3548", roughness: 0.9, metalness: 0 }),
+  sofa: standard("sofa", { color: "#4a5a78", roughness: 0.9, metalness: 0 }),
   wood: standard("wood", { color: "#3b2f27", roughness: 0.6, metalness: 0.05 }),
-  hub: standard("hub", { color: "#151b25", roughness: 0.35, metalness: 0.6 }),
+  hub: standard("hub", { color: "#2a3342", roughness: 0.35, metalness: 0.6 }),
   board: standard("board", { color: "#d6dce4", roughness: 0.35, metalness: 0.05 }),
   lightStrip: () => sharedMaterial("lightStrip", () => new THREE.MeshBasicMaterial({ color: new THREE.Color("#7cc4d6").multiplyScalar(0.55) })),
   glass: () =>
@@ -164,7 +164,7 @@ function drawFloor(rough: boolean): HTMLCanvasElement {
       } else {
         // Base #0f141b with a subtle brightness step per tile.
         const k = 0.94 + shade * 0.14;
-        ctx.fillStyle = `rgb(${Math.round(15 * k)}, ${Math.round(20 * k)}, ${Math.round(27 * k)})`;
+        ctx.fillStyle = `rgb(${Math.round(92 * k)}, ${Math.round(98 * k)}, ${Math.round(108 * k)})`;
       }
       ctx.fillRect(col * tile, row * tile, tile, tile);
       // Faint mottling inside the tile.
@@ -179,7 +179,7 @@ function drawFloor(rough: boolean): HTMLCanvasElement {
     }
   }
   // Thin seams.
-  ctx.fillStyle = rough ? "rgb(90, 90, 90)" : "#1a2230";
+  ctx.fillStyle = rough ? "rgb(90, 90, 90)" : "#474e59";
   for (let i = 0; i <= FLOOR_TILES_PER_TEXTURE; i++) {
     ctx.fillRect(i * tile - 1.5, 0, 3, size);
     ctx.fillRect(0, i * tile - 1.5, size, 3);

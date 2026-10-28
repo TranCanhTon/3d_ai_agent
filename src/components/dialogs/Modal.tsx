@@ -17,7 +17,7 @@ export function Modal({ title, children, footer, width = 520 }: { title: string;
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-ink-950/70 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-ink-950/70 p-6"
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}
