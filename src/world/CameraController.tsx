@@ -25,15 +25,16 @@ interface Pose {
 const ZOOM_PER_DELTA = 0.0012;
 const SETTLED = 0.001;
 
-/** Focus the desk (or hub console) of an agent of the selected project. */
-export function focusAgentDesk(agentId: string): void {
+/** Focus the desk (or hub console) of an agent of the selected project; `keepZoom` only pans (Locate). */
+export function focusAgentDesk(agentId: string, keepZoom = false): void {
   const store = useWorldStore.getState();
   const agent = store.snapshot?.agents.find((a) => a.id === agentId);
   if (agent === undefined || agent.projectId !== store.selectedProjectId) return;
   const parsed = parseAgentId(agentId);
   if (parsed === null) return;
   const { center } = STATIONS[ROLE_DEFINITIONS[parsed.role].homeStation];
-  store.requestCamera({ focus: { x: center.x, y: 0, z: center.z } });
+  const point = { x: center.x, y: 0, z: center.z };
+  store.requestCamera(keepZoom ? { pan: point } : { focus: point });
 }
 
 export function CameraController() {
@@ -135,6 +136,10 @@ export function CameraController() {
       else if (request.focus !== undefined) {
         const distance = clampDistance(v, CONFIG.world.focusDistance);
         goal.current = { target: clampTarget(v, request.focus, distance), distance };
+      } else if (request.pan !== undefined) {
+        // Locate: slide to the point at the zoom I have now.
+        const distance = goal.current.distance;
+        goal.current = { target: clampTarget(v, request.pan, distance), distance };
       }
     }
 

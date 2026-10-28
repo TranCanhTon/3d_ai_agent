@@ -284,6 +284,21 @@ export class WebSocketAgentBackend implements AgentBackend {
   answerTask(args: CommandArgsMap["answerTask"]) {
     return this.run("answerTask", args);
   }
+  approveTask(args: CommandArgsMap["approveTask"]) {
+    return this.run("approveTask", args);
+  }
+  reviseBrief(args: CommandArgsMap["reviseBrief"]) {
+    return this.run("reviseBrief", args);
+  }
+  changeTask(args: CommandArgsMap["changeTask"]) {
+    return this.run("changeTask", args);
+  }
+  applyChange(args: CommandArgsMap["applyChange"]) {
+    return this.run("applyChange", args);
+  }
+  discardChange(args: CommandArgsMap["discardChange"]) {
+    return this.run("discardChange", args);
+  }
   respondPermission(args: CommandArgsMap["respondPermission"]) {
     return this.run("respondPermission", args);
   }

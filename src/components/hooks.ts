@@ -25,6 +25,11 @@ export function useProjectTasks(): Task[] {
   return useWorldStore(useShallow((s) => s.snapshot?.tasks.filter((t) => t.projectId === s.selectedProjectId) ?? EMPTY_TASKS));
 }
 
+/** The selected project's orchestrator (sONion Ring): the agent I talk to. */
+export function useOrchestrator(): AgentState | null {
+  return useWorldStore((s) => s.snapshot?.agents.find((a) => a.projectId === s.selectedProjectId && a.role === "orchestrator") ?? null);
+}
+
 export function useAgent(agentId: string | null | undefined): AgentState | null {
   return useWorldStore((s) => (agentId == null ? null : (s.snapshot?.agents.find((a) => a.id === agentId) ?? null)));
 }

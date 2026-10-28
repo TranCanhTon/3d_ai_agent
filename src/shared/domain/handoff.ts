@@ -2,7 +2,7 @@
 // texts the server sends between agents. Pure: no I/O, never throws.
 
 import type { AgentRole } from "./roles.ts";
-import type { Task } from "./taskTypes.ts";
+import { RESTART_STEPS, type RestartStep, type Task } from "./taskTypes.ts";
 
 // ── Steps ───────────────────────────────────────────────────────────────────
 
@@ -22,10 +22,10 @@ export const STEP_ROLE: Record<PipelineStep, AgentRole> = {
 
 /** What a step's reply must end with, as written in reminders and pause reasons. */
 export const STEP_ENDING: Record<PipelineStep, string> = {
-  intake: "BRIEF:",
+  intake: "YOU ASKED: and BRIEF: (or QUESTION:)",
   planning: "PLAN: and RESEARCH QUESTIONS:",
   research: "FINDINGS:",
-  implementation: "CHANGES: and HOW TO TEST:",
+  implementation: "CHANGES:, HOW TO TEST: and STEPS DONE:",
   testing: "VERDICT: PASS or VERDICT: FAIL",
   review: "VERDICT: APPROVED or VERDICT: CHANGES",
   summary: "SUMMARY:",
@@ -38,18 +38,25 @@ export const PAUSE = {
   archived: "Project archived",
   question: "Waiting for your answer",
   permission: "Waiting for your OK",
+  change: "Waiting for your OK on a change",
 } as const;
+
+/** What sONion Ring's reply to a change must end with. */
+export const CHANGE_ENDING = "YOU ASKED:, BRIEF: and RESTART FROM: (or QUESTION:)";
 
 // ── Marker parser ───────────────────────────────────────────────────────────
 
 export const MARKERS = [
+  "YOU ASKED",
   "BRIEF",
+  "RESTART FROM",
   "QUESTION",
   "PLAN",
   "RESEARCH QUESTIONS",
   "FINDINGS",
   "CHANGES",
   "HOW TO TEST",
+  "STEPS DONE",
   "VERDICT",
   "SUMMARY",
 ] as const;
@@ -143,12 +150,18 @@ export function bulletItems(text: string): string[] {
   return items;
 }
 
+/** `STEPS DONE: 1, 2, 4` → [1, 2, 4]; "none" or nothing → []. */
+export function stepNumbers(text: string | undefined): number[] {
+  if (text === undefined) return [];
+  return [...new Set([...text.matchAll(/\d+/g)].map((m) => Number(m[0])))];
+}
+
 export type StepResult =
-  | { kind: "brief"; brief: string }
-  | { kind: "question"; question: string }
+  | { kind: "brief"; brief: string; youAsked: string }
+  | { kind: "question"; question: string; /** sONion Ring's restatement at intake; null for other steps. */ youAsked: string | null }
   | { kind: "plan"; plan: string; researchQuestions: string; skipResearch: boolean; subtasks: string[] }
   | { kind: "findings"; findings: string; items: string[] }
-  | { kind: "changes"; changes: string; howToTest: string }
+  | { kind: "changes"; changes: string; howToTest: string; stepsDone: number[] }
   | { kind: "qa"; verdict: "PASS" | "FAIL" }
   | { kind: "review"; verdict: "APPROVED" | "CHANGES" }
   | { kind: "summary"; summary: string }
@@ -172,24 +185,39 @@ export function canAsk(step: PipelineStep): boolean {
   return step !== "summary";
 }
 
+/** QUESTION: comes after the ending markers (or there are none): the reply asks me. */
+function asksLast(reply: ParsedReply, endings: Marker[]): boolean {
+  const { sections, lines } = reply;
+  const has = (marker: Marker) => sections[marker] !== undefined && sections[marker] !== "";
+  if (!has("QUESTION")) return false;
+  // A verdict sits on its marker line, so its section may be empty.
+  const endingLine = Math.max(-1, ...endings.map((marker) => (marker === "VERDICT" || has(marker) ? (lines[marker] ?? -1) : -1)));
+  return (lines.QUESTION ?? -1) > endingLine;
+}
+
 /**
  * Reads a step's final reply. Any step but the summary may end with QUESTION:
  * instead of its ending, whichever comes last. `questionAllowed` is false once I
  * answered a question in this step (one question per step, so it cannot loop).
+ * Intake always may ask (sONion Ring asks until he is sure) and must first restate
+ * my request (YOU ASKED:).
  */
 export function readStepResult(step: PipelineStep, text: string, questionAllowed = true): StepResult {
-  const { sections, values, lines } = parseReply(text);
+  const reply = parseReply(text);
+  const { sections, values } = reply;
   const has = (marker: Marker) => sections[marker] !== undefined && sections[marker] !== "";
 
-  if (questionAllowed && canAsk(step) && has("QUESTION")) {
-    // A verdict sits on its marker line, so its section may be empty.
-    const endingLine = Math.max(-1, ...STEP_MARKERS[step].map((marker) => (marker === "VERDICT" || has(marker) ? (lines[marker] ?? -1) : -1)));
-    if ((lines.QUESTION ?? -1) > endingLine) return { kind: "question", question: sections.QUESTION ?? "" };
+  if (step === "intake") {
+    if (!has("YOU ASKED")) return missing("YOU ASKED:");
+    const youAsked = sections["YOU ASKED"] ?? "";
+    if (asksLast(reply, STEP_MARKERS.intake)) return { kind: "question", question: sections.QUESTION ?? "", youAsked };
+    return has("BRIEF") ? { kind: "brief", brief: sections.BRIEF ?? "", youAsked } : missing("BRIEF:");
+  }
+  if (questionAllowed && canAsk(step) && asksLast(reply, STEP_MARKERS[step])) {
+    return { kind: "question", question: sections.QUESTION ?? "", youAsked: null };
   }
 
   switch (step) {
-    case "intake":
-      return has("BRIEF") ? { kind: "brief", brief: sections.BRIEF ?? "" } : missing("BRIEF:");
     case "planning": {
       if (!has("PLAN")) return missing("PLAN:");
       if (sections["RESEARCH QUESTIONS"] === undefined) return missing("RESEARCH QUESTIONS:");
@@ -205,7 +233,7 @@ export function readStepResult(step: PipelineStep, text: string, questionAllowed
     case "implementation":
       if (!has("CHANGES")) return missing("CHANGES:");
       if (!has("HOW TO TEST")) return missing("HOW TO TEST:");
-      return { kind: "changes", changes: sections.CHANGES ?? "", howToTest: sections["HOW TO TEST"] ?? "" };
+      return { kind: "changes", changes: sections.CHANGES ?? "", howToTest: sections["HOW TO TEST"] ?? "", stepsDone: stepNumbers(sections["STEPS DONE"]) };
     case "testing": {
       const verdict = values.VERDICT;
       return verdict === "PASS" || verdict === "FAIL" ? { kind: "qa", verdict } : missing("VERDICT:");
@@ -219,6 +247,34 @@ export function readStepResult(step: PipelineStep, text: string, questionAllowed
       return summary === "" ? missing("SUMMARY:") : { kind: "summary", summary };
     }
   }
+}
+
+export type ChangeResult =
+  | { kind: "question"; question: string; youAsked: string }
+  | { kind: "change"; youAsked: string; brief: string; restartFrom: RestartStep; why: string }
+  | { kind: "missing"; marker: string };
+
+/** `implementation`, `**Implementation** - the toggle moves` → implementation; anything else → null. */
+export function readRestartFrom(text: string | undefined): { step: RestartStep; why: string } | null {
+  if (text === undefined) return null;
+  const match = /^[\s*_`]*([A-Za-z]+)[*_`]*[\s.:—–-]*([\s\S]*)$/.exec(text.trim());
+  const word = match?.[1]?.toLowerCase() ?? "";
+  const step = RESTART_STEPS.find((s) => s === word);
+  return step === undefined ? null : { step, why: firstLine(match?.[2] ?? "") };
+}
+
+/** sONion Ring's reply to a change: YOU ASKED: and either QUESTION: or BRIEF: + RESTART FROM:. */
+export function readChangeResult(text: string): ChangeResult {
+  const reply = parseReply(text);
+  const { sections } = reply;
+  const has = (marker: Marker) => sections[marker] !== undefined && sections[marker] !== "";
+  if (!has("YOU ASKED")) return { kind: "missing", marker: "YOU ASKED:" };
+  const youAsked = sections["YOU ASKED"] ?? "";
+  if (asksLast(reply, ["BRIEF", "RESTART FROM"])) return { kind: "question", question: sections.QUESTION ?? "", youAsked };
+  if (!has("BRIEF")) return { kind: "missing", marker: "BRIEF:" };
+  const restart = readRestartFrom(sections["RESTART FROM"]);
+  if (restart === null) return { kind: "missing", marker: "RESTART FROM:" };
+  return { kind: "change", youAsked, brief: sections.BRIEF ?? "", restartFrom: restart.step, why: restart.why };
 }
 
 /** First non-empty line, without list markup. */
@@ -247,12 +303,24 @@ function block(marker: string, content: string): string {
   return `${marker}\n${content.trim() === "" ? "(empty)" : content.trim()}`;
 }
 
+const INTAKE_RULES =
+  "Start with YOU ASKED: and my request in your own words, short. Then, if you are not about 95% sure what I want (scope, files, behaviour, how to check it), end with QUESTION: and numbered questions (at most 5). Otherwise end with BRIEF: and the full brief for the team: goal, in scope, out of scope, files or areas if known, and what done looks like (how to check it). Never guess to fill gaps.";
+
 export function intakeHandoff(task: Pick<Task, "title" | "description" | "priority">): string {
   return [
     header("you", task),
     `Title: ${task.title}\nPriority: ${task.priority}`,
     block("Description:", task.description === "" ? "(no description)" : task.description),
-    "This is a new task from the New task form. Turn it into a brief for the team and end with BRIEF:. If something important is unclear, ask me one question instead and end with QUESTION:.",
+    `This is a new task from the New task form. Confirm it with me before the team starts. ${INTAKE_RULES}`,
+  ].join("\n\n");
+}
+
+/** Request changes on a brief: back to sONion Ring in the task's session. */
+export function reviseBriefHandoff(task: Pick<Task, "title">, request: string): string {
+  return [
+    header("you", task),
+    block("Changes to the brief:", request),
+    `Answer with a new YOU ASKED: and a full new BRIEF: (or QUESTION: if you need to know more), never only the differences. ${INTAKE_RULES}`,
   ].join("\n\n");
 }
 
@@ -260,6 +328,52 @@ export function intakeHandoff(task: Pick<Task, "title" | "description" | "priori
 export function answerHandoff(task: Pick<Task, "title">, step: PipelineStep, answer: string): string {
   return [header("you", task), block("Answer to your question:", answer), `Now go on with your step and end with ${STEP_ENDING[step]}.`].join("\n\n");
 }
+
+/** What sONion Ring gets with a change to a running task. */
+export interface ChangeContext {
+  approvedBrief: string;
+  plan: string;
+  /** STD Dren's latest CHANGES, or null before implementation. */
+  changes: string | null;
+  /** "QA, attempt 1: FAIL" lines, oldest first. */
+  verdicts: string[];
+  /** e.g. "Implementation (STD Dren)". */
+  currentStep: string;
+}
+
+export function changeHandoff(task: Pick<Task, "title">, request: string, context: ChangeContext): string {
+  return [
+    header("you", task),
+    block("Change request:", request),
+    block("Approved brief:", context.approvedBrief),
+    block("Plan:", context.plan === "" ? "(no plan yet)" : context.plan),
+    block("Latest CHANGES from the engineer:", context.changes ?? "(none yet)"),
+    block("Verdicts so far:", context.verdicts.length === 0 ? "(none yet)" : context.verdicts.map((v) => `- ${v}`).join("\n")),
+    `Current step: ${context.currentStep}`,
+    "I want to change this running task. The current step finishes, then the team waits for my OK. Start with YOU ASKED: and the change in your own words. If you are not about 95% sure what I want, end with QUESTION: and numbered questions (at most 5). Otherwise write the full updated BRIEF: (not only the differences), then RESTART FROM: with one of planning, research, implementation or testing and one line why. Pick the earliest step the change actually affects.",
+  ].join("\n\n");
+}
+
+/** My answer to sONion Ring's question about a change. */
+export function changeAnswerHandoff(task: Pick<Task, "title">, answer: string): string {
+  return [header("you", task), block("Answer to your question about the change:", answer), `Now end with ${CHANGE_ENDING}.`].join("\n\n");
+}
+
+/** Request changes on sONion Ring's updated brief for a change. */
+export function reviseChangeHandoff(task: Pick<Task, "title">, request: string): string {
+  return [
+    header("you", task),
+    block("Changes to your updated brief:", request),
+    `Answer with a new YOU ASKED:, the full updated BRIEF: (not only the differences) and RESTART FROM:, or QUESTION: if you need to know more. End with ${CHANGE_ENDING}.`,
+  ].join("\n\n");
+}
+
+/** Put before the first handoff after a change is applied. */
+export function changedTaskLine(userName: string, request: string): string {
+  return `${userName} changed the task:\n${request.trim()}`;
+}
+
+const STEPS_DONE_LINE = "STEPS DONE: with the numbers of the plan steps you finished in this attempt (for example STEPS DONE: 1, 2).";
 
 export function planningHandoff(names: TeamNames, task: Pick<Task, "title" | "description">, brief: string): string {
   return [
@@ -295,7 +409,7 @@ export function implementationHandoff(
     block("BRIEF:", brief),
     block("PLAN:", plan),
     block("FINDINGS:", findings ?? "none (no research needed)"),
-    "Implement the plan. Do not commit or push. End with CHANGES: and HOW TO TEST:.",
+    `Implement the plan. Do not commit or push. End with CHANGES: and HOW TO TEST:, then ${STEPS_DONE_LINE}`,
     ASK_LINE,
   ].join("\n\n");
 }
@@ -307,20 +421,31 @@ export function reworkHandoff(
   attempt: number,
   source: "qa" | "review",
   feedback: string,
+  brief: string,
 ): string {
   const from = source === "qa" ? names.qa : names.reviewer;
   const what = source === "qa" ? "QA failed" : "The review asked for changes";
   return [
     header(from, task, attempt),
     block(`${what}. Report:`, feedback),
-    "Fix exactly what was reported, then check nothing else broke. Do not commit or push. End with CHANGES: and HOW TO TEST:.",
+    block("BRIEF:", brief),
+    `Fix exactly what was reported, then check nothing else broke. Do not commit or push. End with CHANGES: and HOW TO TEST:, then ${STEPS_DONE_LINE}`,
     ASK_LINE,
   ].join("\n\n");
 }
 
-export function testingHandoff(names: TeamNames, task: Pick<Task, "title">, attempt: number, plan: string, changes: string, howToTest: string): string {
+export function testingHandoff(
+  names: TeamNames,
+  task: Pick<Task, "title">,
+  attempt: number,
+  brief: string,
+  plan: string,
+  changes: string,
+  howToTest: string,
+): string {
   return [
     header(names.engineer, task, attempt),
+    block("BRIEF:", brief),
     block("PLAN:", plan),
     block("CHANGES:", changes),
     block("HOW TO TEST:", howToTest),
@@ -345,6 +470,7 @@ export function summaryHandoff(
   names: TeamNames,
   task: Pick<Task, "title">,
   attempts: number,
+  brief: string,
   changes: string,
   qaVerdict: string,
   reviewVerdict: string,
@@ -352,6 +478,7 @@ export function summaryHandoff(
   return [
     header(names.reviewer, task),
     `The task finished after ${attempts} attempt${attempts === 1 ? "" : "s"}. QA: ${qaVerdict}. Review: ${reviewVerdict}.`,
+    block("BRIEF:", brief),
     block("Final CHANGES:", changes),
     "Give the user a short summary of what changed and what they should check, and end with SUMMARY: and one line for the team notes.",
   ].join("\n\n");
@@ -360,6 +487,11 @@ export function summaryHandoff(
 /** Sent once when a reply lacks its required ending. */
 export function reminderText(step: PipelineStep): string {
   return `Your reply did not end with the required ending. Finish now with: ${STEP_ENDING[step]}`;
+}
+
+/** Sent once when sONion Ring's reply to a change lacks its ending. */
+export function changeReminderText(): string {
+  return `Your reply did not end with the required ending. Finish now with: ${CHANGE_ENDING}`;
 }
 
 /** Resume after a pause, into the step's task session. */

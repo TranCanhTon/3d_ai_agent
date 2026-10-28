@@ -349,22 +349,35 @@ await check("9. invalid JSON and an unknown command do not take the server down"
   client.close();
 });
 
-await check("10. task commands: submit, then clear errors for resume, answer and a second cancel", async () => {
+await check("10. task commands: submit, then clear errors for resume, answer, Start, changes and a second cancel", async () => {
   const client = await TestClient.authed();
-  const blank = await client.command("submitTask", { projectId, title: "   " });
+  const team = CONFIG.roleModelDefaults;
+  const blank = await client.command("submitTask", { projectId, title: "   ", team });
   assert.ok(!blank.ok, "empty title");
-  const long = await client.command("submitTask", { projectId, title: "x".repeat(CONFIG.maxTaskTitleChars + 1) });
+  const long = await client.command("submitTask", { projectId, title: "x".repeat(CONFIG.maxTaskTitleChars + 1), team });
   assert.ok(!long.ok, "title over maxTaskTitleChars");
-  const unknown = await client.command("submitTask", { projectId: "proj_nope", title: "x" });
+  const noTeam = await client.command("submitTask", { projectId, title: "x" });
+  assert.ok(!noTeam.ok, "the team's models are required");
+  const unknown = await client.command("submitTask", { projectId: "proj_nope", title: "x", team });
   assert.ok(!unknown.ok && /Unknown project/.test(unknown.error));
 
-  const submit = await client.command("submitTask", { projectId, title: "Add dark mode", priority: "high" });
+  const submit = await client.command("submitTask", { projectId, title: "Add dark mode", priority: "high", team });
   assert.ok(submit.ok);
   const taskId = (submit.result as { id: string }).id;
   const resume = await client.command("resumeTask", { taskId });
   assert.ok(!resume.ok && /not paused/.test(resume.error), resume.ok ? "" : resume.error);
   const answer = await client.command("answerTask", { taskId, text: "x" });
   assert.ok(!answer.ok && /no question/.test(answer.error));
+  const start = await client.command("approveTask", { taskId });
+  assert.ok(!start.ok && /no brief waiting/.test(start.error), "nothing to start during intake");
+  const revise = await client.command("reviseBrief", { taskId, text: "x" });
+  assert.ok(!revise.ok && /no brief waiting/.test(revise.error));
+  const change = await client.command("changeTask", { taskId, text: "x" });
+  assert.ok(!change.ok && /Only a running task/.test(change.error));
+  const apply = await client.command("applyChange", { taskId });
+  assert.ok(!apply.ok && /no updated brief/.test(apply.error));
+  const discard = await client.command("discardChange", { taskId });
+  assert.ok(!discard.ok && /no change to discard/.test(discard.error));
   const cancel = await client.command("cancelTask", { taskId });
   assert.ok(cancel.ok);
   const again = await client.command("cancelTask", { taskId });

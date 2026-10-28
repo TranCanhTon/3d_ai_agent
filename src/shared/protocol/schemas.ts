@@ -10,6 +10,11 @@ import type { PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import { AGENT_ROLES } from "../domain/roles.ts";
 import {
+  ASK_KINDS,
+  ASK_LANES,
+  ASK_OUTCOMES,
+  CHANGE_OUTCOMES,
+  RESTART_STEPS,
   TASK_END_REASONS,
   TASK_PRIORITIES,
   TASK_STATUSES,
@@ -64,6 +69,39 @@ export const agentStateSchema = z.object({
   updatedAt: epochMs,
 });
 
+const modelSettingSchema = z.object({ model: z.string(), effort: z.enum(EFFORT_LEVELS).nullable() });
+
+/** Each agent's model and effort for a task. */
+export const taskTeamSchema = z.object(
+  Object.fromEntries(AGENT_ROLES.map((role) => [role, modelSettingSchema])) as Record<(typeof AGENT_ROLES)[number], typeof modelSettingSchema>,
+);
+
+const taskAskSchema = z.object({
+  id,
+  kind: z.enum(ASK_KINDS),
+  lane: z.enum(ASK_LANES),
+  agentId: z.string(),
+  youAsked: z.string().nullable(),
+  text: z.string(),
+  restartFrom: z.enum(RESTART_STEPS).nullable(),
+  restartWhy: z.string().nullable(),
+  createdAt: epochMs,
+  outcome: z.enum(ASK_OUTCOMES),
+  reply: z.string().nullable(),
+  closedAt: epochMs.nullable(),
+});
+
+const taskChangeSchema = z.object({
+  id,
+  text: z.string(),
+  requestedAt: epochMs,
+  outcome: z.enum(CHANGE_OUTCOMES),
+  restartFrom: z.enum(RESTART_STEPS).nullable(),
+  detail: z.string().nullable(),
+  closedAt: epochMs.nullable(),
+});
+
+// Fields added after tasks were first saved have defaults, so older task files still load.
 export const taskSchema = z.object({
   id,
   projectId: id,
@@ -79,6 +117,7 @@ export const taskSchema = z.object({
   completedAt: epochMs.nullable(),
   iteration: z.number().int().nonnegative(),
   subtasks: z.array(z.object({ id, title: z.string(), done: z.boolean() })),
+  claimedSteps: z.array(z.number().int().positive()).default([]),
   findings: z.array(z.string()),
   history: z.array(
     z.object({
@@ -92,6 +131,10 @@ export const taskSchema = z.object({
   sessions: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
   outputs: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
   question: z.string().nullable(),
+  approvedBrief: z.string().nullable().default(null),
+  asks: z.array(taskAskSchema).default([]),
+  changes: z.array(taskChangeSchema).default([]),
+  team: taskTeamSchema.default(() => structuredClone(CONFIG.roleModelDefaults)),
   endReason: z.enum(TASK_END_REASONS).nullable(),
   summary: z.string().nullable(),
 });
@@ -214,10 +257,16 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
     title: z.string().trim().min(1).max(CONFIG.maxTaskTitleChars),
     description: z.string().max(CONFIG.maxMessageChars).optional(),
     priority: z.enum(TASK_PRIORITIES).optional(),
+    team: taskTeamSchema.refine((team) => Object.values(team).every((s) => isModelId(s.model)), { message: "Unknown model" }),
   }),
   command("cancelTask", { taskId: id }),
   command("resumeTask", { taskId: id }),
   command("answerTask", { taskId: id, text }),
+  command("approveTask", { taskId: id }),
+  command("reviseBrief", { taskId: id, text }),
+  command("changeTask", { taskId: id, text }),
+  command("applyChange", { taskId: id }),
+  command("discardChange", { taskId: id }),
   command("respondPermission", { requestId: id, decision: z.enum(["allow", "deny"]) }),
   command("pinToNotes", { messageId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
   command("getNotes", { projectId: id }),
@@ -283,6 +332,11 @@ export const commandResultSchemas = {
   cancelTask: z.null(),
   resumeTask: z.null(),
   answerTask: z.null(),
+  approveTask: z.null(),
+  reviseBrief: z.null(),
+  changeTask: z.null(),
+  applyChange: z.null(),
+  discardChange: z.null(),
   respondPermission: z.null(),
   pinToNotes: z.null(),
   getNotes: z.string(),

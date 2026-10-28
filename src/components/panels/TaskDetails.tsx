@@ -1,316 +1,338 @@
 "use client";
 
-// One task: status, the question box or Resume, the workflow, the plan and the
-// team's work as one thread (my request, then each agent's reply in order).
+// One task as a progress view: what it is, how far it got, who is working, the
+// workflow, the plan's checklist and the research findings. The conversation stays
+// in each agent's Tasks view; questions, briefs and changes are cards in my chat
+// with the orchestrator.
 
-import { Check, ChevronRight, CircleAlert, CircleCheck, CircleX, Play, Send } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { useShallow } from "zustand/react/shallow";
-import { ensureChatPage, getBackend } from "@/client/backendClient.ts";
+import { Check, Crosshair, Lightbulb, Pencil, Play } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { getBackend, openAgent } from "@/client/backendClient.ts";
 import { CONFIG } from "@/shared/config.ts";
-import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
+import type { AgentState } from "@/shared/domain/agentTypes.ts";
+import { PAUSE, STEP_ROLE } from "@/shared/domain/handoff.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
-import type { Task, WorkflowSignal } from "@/shared/domain/taskTypes.ts";
-import { canResume, workflowSteps, type StepState } from "@/shared/ui/present.ts";
-import { chatKey, useWorldStore } from "@/state/useWorldStore.ts";
-import { errorText, useAgent, useConnected, useProjectAgents } from "../hooks.ts";
-import { Avatar, Badge, ClockTime, ConfirmButton, cx, Empty, ErrorLine, Markdown, ProgressBar, RelativeTime, Section } from "../ui.tsx";
-import { MessageBubble } from "./Messages.tsx";
+import type { Task } from "@/shared/domain/taskTypes.ts";
+import { STATIONS } from "@/shared/domain/worldLayout.ts";
+import { WORKFLOW_ROWS, workflowRowStates, type RowState, type WorkflowRow } from "@/shared/domain/workflow.ts";
+import { canChange, canResume, hasOpenAsk, shortTaskId, waitsForMe } from "@/shared/ui/present.ts";
+import { useWorldStore } from "@/state/useWorldStore.ts";
+import { errorText, useAgent, useConnected, useOrchestrator, useProjectAgents } from "../hooks.ts";
+import { modelSettingLabel } from "../ModelPicker.tsx";
+import { Badge, cx, ErrorLine, ProgressBar } from "../ui.tsx";
 import { PriorityTag, progressColor, toneOf } from "./TaskCard.tsx";
 
-const SIGNAL_LABEL: Record<WorkflowSignal, string> = {
-  picked_up: "Picked up",
-  delegated: "Brief handed to planning",
-  plan_ready: "Plan ready",
-  research_skipped: "No research needed",
-  findings_published: "Findings published",
-  submitted: "Changes submitted",
-  tests_passed: "Tests passed",
-  tests_failed: "Tests failed",
-  approved: "Review approved",
-  changes_requested: "Review asked for changes",
-  abort: "Stopped",
+const ROW_LABEL: Record<WorkflowRow, string> = {
+  intake: "Intake",
+  planning: "Planning",
+  research: "Research",
+  implementation: "Implementation",
+  testing: "Testing",
+  review: "Code review",
+  summary: "Done",
 };
 
-const STEP_STYLE: Record<StepState, string> = {
-  done: "bg-ok/15 text-ok ring-ok/30",
-  current: "bg-signal/20 text-signal-strong ring-signal/60",
-  skipped: "bg-ink-800 text-mist-500 ring-mist-500/15 line-through",
-  pending: "bg-ink-800 text-mist-500 ring-mist-500/15",
-  failed: "bg-bad/15 text-bad ring-bad/40",
-};
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-mist-500">{children}</h4>;
+}
 
-function Workflow({ task }: { task: Task }) {
-  const steps = workflowSteps(task);
+/** The description, three lines until I ask for more. */
+function Description({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el !== null && !open) setLong(el.scrollHeight > el.clientHeight + 1);
+  }, [text, open]);
   return (
-    <ol className="flex flex-wrap items-center gap-1" aria-label="Workflow">
-      {steps.map((step, index) => (
-        <li key={step.phase} className="flex items-center gap-1">
-          <span
-            className={cx("rounded-md px-1.5 py-0.5 text-xs font-medium ring-1", STEP_STYLE[step.state])}
-            aria-current={step.state === "current" ? "step" : undefined}
-            title={step.state === "skipped" ? "Skipped: no research questions" : step.state}
+    <div>
+      <p ref={ref} className={cx("whitespace-pre-wrap text-sm leading-[22px] text-mist-300", !open && "line-clamp-3")}>
+        {text}
+      </p>
+      {(long || open) && (
+        <button type="button" className="mt-1 text-xs font-medium text-signal hover:underline" onClick={() => setOpen(!open)}>
+          {open ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function RowIcon({ state, color, bad }: { state: RowState; color: string; bad: boolean }) {
+  if (state === "done") {
+    return (
+      <span className="inline-flex size-[18px] items-center justify-center rounded-full bg-ok/20 text-ok">
+        <Check size={12} strokeWidth={3} />
+      </span>
+    );
+  }
+  if (state === "current") {
+    return (
+      <span className="inline-flex size-[18px] items-center justify-center rounded-full" style={{ boxShadow: `0 0 0 2px ${bad ? "var(--color-bad)" : color}` }}>
+        <span className="size-2.5 rounded-full" style={{ background: bad ? "var(--color-bad)" : color }} />
+      </span>
+    );
+  }
+  return <span className="inline-flex size-[18px] rounded-full border-2 border-mist-500/30" />;
+}
+
+function WorkflowList({ task, agents }: { task: Task; agents: AgentState[] }) {
+  const states = workflowRowStates(task);
+  const waiting = waitsForMe(task);
+  const ended = task.endReason !== null && task.endReason !== "done";
+  return (
+    <ol className="space-y-0.5" aria-label="Workflow">
+      {WORKFLOW_ROWS.map((row) => {
+        const state = states[row];
+        const role = STEP_ROLE[row];
+        const agent = agents.find((a) => a.role === role) ?? null;
+        const color = ROLE_DEFINITIONS[role].color;
+        const current = state === "current";
+        const attempt = row === "implementation" && task.iteration > 1 && state !== "upcoming";
+        return (
+          <li
+            key={row}
+            aria-current={current ? "step" : undefined}
+            className={cx("flex h-9 items-center gap-3 rounded-lg px-2.5", current && "bg-ink-800")}
           >
-            {step.label}
-          </span>
-          {index < steps.length - 1 && <ChevronRight size={11} className="text-mist-500" aria-hidden />}
-        </li>
-      ))}
+            <RowIcon state={state} color={color} bad={ended} />
+            <span className={cx("text-sm", state === "upcoming" || state === "skipped" ? "text-mist-500" : "text-mist-100", current && "font-medium")}>
+              {ROW_LABEL[row]}
+            </span>
+            {attempt && (
+              <span className="text-xs text-warn">
+                Attempt {task.iteration}/{CONFIG.maxIterations}
+              </span>
+            )}
+            <span
+              className={cx("ml-auto truncate text-xs", !current && "text-mist-500", current && waiting && "font-medium text-warn")}
+              style={current && !waiting && !ended ? { color } : undefined}
+              title={state === "skipped" ? "No research questions" : `${agent?.name ?? role}: ${modelSettingLabel(task.team[role])} for this task`}
+            >
+              {state === "skipped" ? "Skipped" : current && waiting && !ended ? "Waiting for you" : (agent?.name ?? role)}
+            </span>
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
-function QuestionBox({ task }: { task: Task }) {
+function Checklist({ task, planner }: { task: Task; planner: string }) {
+  if (task.subtasks.length === 0) {
+    return <p className="text-sm text-mist-500">{planner} writes the steps after the brief is approved.</p>;
+  }
+  return (
+    <ul className="space-y-1.5">
+      {task.subtasks.map((subtask) => (
+        <li key={subtask.id} className="flex items-start gap-2.5 text-sm">
+          <span
+            className={cx(
+              "mt-[3px] inline-flex size-4 shrink-0 items-center justify-center rounded",
+              subtask.done ? "bg-ok/20 text-ok" : "border-2 border-mist-500/40",
+            )}
+            aria-label={subtask.done ? "Done" : "Not done"}
+          >
+            {subtask.done && <Check size={11} strokeWidth={3} />}
+          </span>
+          <span className={cx(subtask.done ? "text-mist-500 line-through" : "text-mist-100")}>{subtask.title}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Change task: what I want different goes to the orchestrator, who updates the brief in my chat. */
+export function ChangeBox({ task, onClose }: { task: Task; onClose: () => void }) {
   const connected = useConnected();
-  // The step's agent asked (any agent may, not only sONion Ring).
-  const asker = useAgent(task.assignedAgentId);
-  const [answer, setAnswer] = useState("");
+  const orchestrator = useOrchestrator();
+  const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const send = () => {
-    if (answer.trim() === "") return;
+    if (text.trim() === "") return;
     setSending(true);
     setError(null);
     getBackend()
-      .answerTask({ taskId: task.id, text: answer.trim() })
+      .changeTask({ taskId: task.id, text: text.trim() })
       .then(
-        () => setAnswer(""),
-        (e: unknown) => setError(errorText(e)),
-      )
-      .finally(() => setSending(false));
+        () => {
+          onClose();
+          if (orchestrator !== null) {
+            useWorldStore.getState().setAgentView("chat");
+            openAgent(orchestrator.id);
+          }
+        },
+        (e: unknown) => {
+          setError(errorText(e));
+          setSending(false);
+        },
+      );
   };
   return (
-    <div className="space-y-2 rounded-xl bg-warn/10 p-3 ring-1 ring-warn/40">
-      <p className="flex items-center gap-2 text-[13px] font-semibold text-warn">
-        {asker !== null && <Avatar agent={asker} size={20} />}
-        {asker === null ? "A question for you" : `${asker.name} asks you`}
+    <div className="space-y-2 rounded-xl bg-ink-850 p-3 ring-1 ring-[var(--hairline)]">
+      <p className="text-xs text-mist-300">
+        What should change? {orchestrator?.name ?? "The orchestrator"} updates the brief; the current step finishes and the team waits for your OK.
       </p>
-      <Markdown text={task.question ?? ""} />
       <textarea
-        className="field min-h-16 resize-y"
-        placeholder="Your answer"
-        aria-label="Your answer"
-        value={answer}
+        className="field min-h-20 resize-y"
+        autoFocus
+        aria-label="What to change"
+        placeholder="Put the toggle in the settings page instead"
         maxLength={CONFIG.maxMessageChars}
-        onChange={(e) => setAnswer(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            send();
-          }
-        }}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
       />
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2">
         <ErrorLine error={error} />
-        <button type="button" className="btn btn-sm btn-primary ml-auto" disabled={!connected || sending || answer.trim() === ""} onClick={send}>
-          <Send size={13} />
-          Send
+        <button type="button" className="btn btn-sm btn-quiet ml-auto" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={!connected || sending || text.trim() === ""} onClick={send}>
+          Send change
         </button>
       </div>
     </div>
   );
 }
 
-const NO_MESSAGES: ChatMessage[] = [];
-
-const ANSWER_HEADING = "Answer to your question:\n";
-
-/** My answer as I typed it, out of the text the pipeline sends (null for the intake handoff). */
-function myAnswer(message: ChatMessage): ChatMessage | null {
-  const start = message.text.indexOf(ANSWER_HEADING);
-  if (start === -1) return null;
-  const rest = message.text.slice(start + ANSWER_HEADING.length);
-  const end = rest.lastIndexOf("\n\nNow ");
-  return { ...message, text: (end === -1 ? rest : rest.slice(0, end)).trim() };
-}
-
-/**
- * The task as one thread: every agent's replies and tool lines and my answers,
- * oldest first. Handoffs are left out (they repeat the reply they pass on), and so
- * is the intake text (the request is shown above).
- */
-function TaskThread({ task }: { task: Task }) {
-  const agents = useProjectAgents();
+/** One highlighted line under the actions: why the task waits, with Resume when that applies. */
+function StatusLine({ task }: { task: Task }) {
   const connected = useConnected();
-  const lists = useWorldStore(useShallow((s) => agents.map((a) => s.chats[chatKey(a.id, "tasks")] ?? NO_MESSAGES)));
-
-  useEffect(() => {
-    if (connected) for (const agent of agents) ensureChatPage(agent.id, "tasks", null);
-  }, [agents, connected]);
-
-  const messages = useMemo(
-    () =>
-      lists
-        .flat()
-        .filter((m) => m.taskId === task.id && m.author.kind !== "handoff")
-        .flatMap((m) => (m.author.kind === "user" ? (myAnswer(m) ?? []) : [m]))
-        .sort((a, b) => a.createdAt - b.createdAt),
-    [lists, task.id],
-  );
-
-  if (messages.length === 0) return <Empty>The team has not started on this task yet.</Empty>;
+  const orchestrator = useOrchestrator();
+  const [error, setError] = useState<string | null>(null);
+  let text: string | null = null;
+  let tone: "warn" | "bad" | "ok" = "warn";
+  if (task.endReason === "failed") [text, tone] = [`Failed: ${task.summary ?? "the step failed"}`, "bad"];
+  else if (task.endReason === "cancelled") [text, tone] = ["Cancelled by you", "bad"];
+  else if (task.endReason === "done") [text, tone] = [task.summary ?? "Done", "ok"];
+  else if (hasOpenAsk(task)) text = `Waiting for you in the chat with ${orchestrator?.name ?? "the orchestrator"}`;
+  else if (task.blockedReason === PAUSE.change) text = `${PAUSE.change}: ${orchestrator?.name ?? "the orchestrator"} is updating the brief`;
+  else if (task.blockedReason !== null) text = canResume(task) ? `Paused: ${task.blockedReason}` : `${task.blockedReason}: answer the permission card to go on`;
+  if (text === null) return null;
+  const openChat = hasOpenAsk(task) && orchestrator !== null;
   return (
-    <div className="space-y-1.5">
-      {messages.map((message, index) => {
-        const previous = messages[index - 1];
-        // A name above each agent's turn (its tool lines and reply); 16px between turns, 6px inside one.
-        const mine = message.author.kind === "user";
-        const newTurn = previous === undefined || previous.agentId !== message.agentId || mine !== (previous.author.kind === "user");
-        return (
-          <div key={message.id} className={cx(newTurn && index > 0 && "pt-2.5")}>
-            {newTurn && !mine && <Speaker agentId={message.agentId} />}
-            <MessageBubble message={message} />
-          </div>
-        );
-      })}
+    <div
+      className={cx(
+        "flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium",
+        tone === "warn" && "bg-warn/10 text-warn",
+        tone === "bad" && "bg-bad/10 text-bad",
+        tone === "ok" && "bg-ok/10 text-ok",
+      )}
+    >
+      <span className="min-w-0 flex-1">{text}</span>
+      {openChat && (
+        <button
+          type="button"
+          className="btn btn-sm btn-quiet shrink-0"
+          onClick={() => {
+            useWorldStore.getState().setAgentView("chat");
+            openAgent(orchestrator.id);
+          }}
+        >
+          Open chat
+        </button>
+      )}
+      {canResume(task) && (
+        <button
+          type="button"
+          className="btn btn-sm btn-primary shrink-0"
+          disabled={!connected}
+          onClick={() => {
+            setError(null);
+            getBackend()
+              .resumeTask({ taskId: task.id })
+              .catch((e: unknown) => setError(errorText(e)));
+          }}
+        >
+          <Play size={13} />
+          Resume
+        </button>
+      )}
+      <ErrorLine error={error} />
     </div>
-  );
-}
-
-function Speaker({ agentId }: { agentId: string }) {
-  const agent = useAgent(agentId);
-  if (agent === null) return null;
-  return (
-    <span className="mb-1 flex items-center gap-2 text-[13px] font-semibold text-mist-100">
-      <Avatar agent={agent} size={20} />
-      {agent.name}
-      <span className="font-normal text-mist-500">{ROLE_DEFINITIONS[agent.role].roleLabel}</span>
-    </span>
   );
 }
 
 export function TaskDetails({ task }: { task: Task }) {
-  const connected = useConnected();
-  const agent = useAgent(task.assignedAgentId);
-  const [error, setError] = useState<string | null>(null);
+  const agents = useProjectAgents();
+  const working = useAgent(task.endReason === null ? task.assignedAgentId : null);
+  const [changing, setChanging] = useState(false);
   const tone = toneOf(task);
-  const ended = task.endReason !== null;
-  const run = (promise: Promise<unknown>) => {
-    setError(null);
-    promise.catch((e: unknown) => setError(errorText(e)));
+  const color = progressColor(task, working === null ? null : ROLE_DEFINITIONS[working.role].color);
+  const percent = Math.round(task.progress * 100);
+  const researchShown = task.findings.length > 0 && workflowRowStates(task).research !== "skipped";
+  const planner = agents.find((a) => a.role === "product_manager")?.name ?? "The product manager";
+
+  const locate = () => {
+    if (working === null) return;
+    const { center } = STATIONS[ROLE_DEFINITIONS[working.role].homeStation];
+    useWorldStore.getState().requestCamera({ pan: { x: center.x, y: 0, z: center.z } });
+    useWorldStore.getState().setDeskHighlight(working.id);
   };
 
   return (
     <div className="space-y-5">
-      <header className="space-y-2">
-        <div className="flex items-center gap-1.5">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs text-mist-500">{shortTaskId(task.id)}</span>
           <Badge tone={tone.badge}>{tone.label}</Badge>
-          <PriorityTag priority={task.priority} />
-          {task.iteration > 0 && (
-            <span className={cx("text-xs", task.iteration > 1 ? "text-warn" : "text-mist-500")}>
-              Attempt {task.iteration}/{CONFIG.maxIterations}
-            </span>
-          )}
-          <span className="ml-auto text-xs text-mist-500">
-            created <RelativeTime at={task.createdAt} />
+          <span className="ml-auto">
+            <PriorityTag priority={task.priority} />
           </span>
         </div>
-        <h3 className="text-base font-semibold leading-snug">{task.title}</h3>
-        {task.description !== "" && <p className="whitespace-pre-wrap text-xs leading-relaxed text-mist-300">{task.description}</p>}
-        <ProgressBar value={task.progress} color={progressColor(task, agent === null ? null : ROLE_DEFINITIONS[agent.role].color)} label="Progress" />
-        {agent !== null && !ended && task.blockedReason === null && (
-          <p className="flex items-center gap-2 text-xs text-mist-300">
-            <Avatar agent={agent} size={18} />
-            {agent.name} · {agent.activity || "working"}
-          </p>
-        )}
-      </header>
-
-      {task.endReason === "done" && (
-        <div className="flex gap-2 rounded-xl bg-ok/10 p-3 text-xs ring-1 ring-ok/30">
-          <CircleCheck size={16} className="shrink-0 text-ok" />
-          <div className="space-y-1">
-            <p className="font-medium text-ok">Done{task.completedAt !== null && <> · <RelativeTime at={task.completedAt} /></>}</p>
-            {task.summary !== null && <p className="text-mist-100">{task.summary}</p>}
+        <h3 className="text-[17px] font-semibold leading-snug text-mist-100">{task.title}</h3>
+        {task.description !== "" && <Description text={task.description} />}
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <ProgressBar value={task.progress} color={color} label="Progress" />
           </div>
+          <span className="w-9 text-right text-xs tabular-nums text-mist-300">{percent}%</span>
         </div>
-      )}
-      {(task.endReason === "failed" || task.endReason === "cancelled") && (
-        <div className="flex gap-2 rounded-xl bg-bad/10 p-3 text-xs ring-1 ring-bad/30">
-          <CircleX size={16} className="shrink-0 text-bad" />
-          <p className="font-medium text-bad">
-            {task.endReason === "cancelled" ? "Cancelled by you" : `Failed${task.summary !== null ? `: ${task.summary}` : ""}`}
-          </p>
-        </div>
-      )}
-
-      {task.question !== null && !ended && <QuestionBox task={task} />}
-
-      {task.blockedReason !== null && task.question === null && !ended && (
-        <div className="flex items-start gap-2 rounded-xl bg-warn/10 p-3 ring-1 ring-warn/30">
-          <CircleAlert size={16} className="mt-0.5 shrink-0 text-warn" />
-          <div className="min-w-0 flex-1 space-y-2">
-            <p className="text-xs font-medium text-warn">
-              {canResume(task) ? `Paused: ${task.blockedReason}` : `${task.blockedReason}: answer the permission card to go on`}
-            </p>
-            {canResume(task) && (
-              <button type="button" className="btn btn-sm btn-primary" disabled={!connected} onClick={() => run(getBackend().resumeTask({ taskId: task.id }))}>
-                <Play size={13} />
-                Resume
+        {(working !== null || canChange(task)) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {working !== null && (
+              <button type="button" className="btn btn-sm btn-ghost" onClick={locate} title={`Show ${working.name}'s desk in the office`}>
+                <Crosshair size={14} />
+                Locate {working.name}
+              </button>
+            )}
+            {canChange(task) && !changing && (
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setChanging(true)}>
+                <Pencil size={13} />
+                Change task
               </button>
             )}
           </div>
-        </div>
-      )}
+        )}
+        {changing && canChange(task) && <ChangeBox task={task} onClose={() => setChanging(false)} />}
+        <StatusLine task={task} />
+      </div>
 
-      {!ended && (
-        <div className="flex items-center gap-2">
-          <ConfirmButton confirmLabel="Cancel task" disabled={!connected} onConfirm={() => run(getBackend().cancelTask({ taskId: task.id }))}>
-            Cancel task…
-          </ConfirmButton>
-          <ErrorLine error={error} />
-        </div>
-      )}
+      <section>
+        <SectionTitle>Workflow</SectionTitle>
+        <WorkflowList task={task} agents={agents} />
+      </section>
 
-      <Section title="Workflow">
-        <Workflow task={task} />
-      </Section>
+      <section>
+        <SectionTitle>Task cards · {task.subtasks.length}</SectionTitle>
+        <Checklist task={task} planner={planner} />
+      </section>
 
-      {task.subtasks.length > 0 && (
-        <Section title={`Plan · ${task.subtasks.length}`}>
-          <ol className="space-y-1">
-            {task.subtasks.map((subtask, index) => (
-              <li key={subtask.id} className="flex gap-2 text-xs">
-                <span className={cx("mt-px inline-flex size-4 shrink-0 items-center justify-center rounded text-xs", subtask.done ? "bg-ok/20 text-ok" : "bg-ink-700 text-mist-500")}>
-                  {subtask.done ? <Check size={11} /> : index + 1}
-                </span>
-                <span className="text-mist-300">{subtask.title}</span>
-              </li>
-            ))}
-          </ol>
-        </Section>
-      )}
-
-      {task.findings.length > 0 && (
-        <Section title="Research findings">
-          <ul className="list-disc space-y-1 pl-4 text-xs text-mist-300">
+      {researchShown && (
+        <section>
+          <SectionTitle>Research findings</SectionTitle>
+          <ul className="space-y-2">
             {task.findings.map((finding) => (
-              <li key={finding}>{finding}</li>
+              <li key={finding} className="flex items-start gap-2.5 text-sm text-mist-100">
+                <Lightbulb size={15} className="mt-[3px] shrink-0 text-warn" />
+                <span>{finding}</span>
+              </li>
             ))}
           </ul>
-        </Section>
-      )}
-
-      <Section title="Team thread">
-        <TaskThread task={task} />
-      </Section>
-
-      {task.history.length > 0 && (
-        <Section title="Timeline">
-          <ol className="space-y-1.5 border-l border-mist-500/15 pl-3">
-            {task.history.map((transition, index) => (
-              <li key={`${transition.at}-${index}`} className="relative text-xs">
-                <span className="absolute -left-[15px] top-1.5 size-1.5 rounded-full bg-mist-500" />
-                <span className="text-mist-500">
-                  <ClockTime at={transition.at} />
-                </span>{" "}
-                <span className="text-mist-300">{SIGNAL_LABEL[transition.signal]}</span>
-              </li>
-            ))}
-          </ol>
-        </Section>
+        </section>
       )}
     </div>
   );
 }
-

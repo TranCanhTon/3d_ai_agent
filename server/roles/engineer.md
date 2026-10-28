@@ -8,3 +8,4 @@ CHANGES:
 - <file>: <what changed>
 HOW TO TEST:
 - ...
+STEPS DONE: <the numbers of the plan steps you finished in this attempt, e.g. 1, 2, 4>

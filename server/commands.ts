@@ -63,6 +63,21 @@ export function handleCommand(command: ClientCommand, ctx: CommandContext): unkn
     case "answerTask":
       ctx.pipeline.answer(command.args.taskId, command.args.text);
       return null;
+    case "approveTask":
+      ctx.pipeline.approve(command.args.taskId);
+      return null;
+    case "reviseBrief":
+      ctx.pipeline.reviseBrief(command.args.taskId, command.args.text);
+      return null;
+    case "changeTask":
+      ctx.pipeline.requestChange(command.args.taskId, command.args.text);
+      return null;
+    case "applyChange":
+      ctx.pipeline.applyChange(command.args.taskId);
+      return null;
+    case "discardChange":
+      ctx.pipeline.discardChange(command.args.taskId);
+      return null;
     case "respondPermission":
       ctx.permissions.respond(command.args.requestId, command.args.decision);
       return null;

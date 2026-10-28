@@ -1,8 +1,11 @@
 // Fake agents for trying the UI without Claude (npm run dev:scripted). Each role
 // answers a pipeline handoff with the ending the pipeline expects, streams its text,
 // shows a few tool lines and asks for one real permission card per build step.
-// QA fails a task's first attempt so the rework loop shows too. Never calls Claude
-// and never writes a file: an allowed Write only changes the reply.
+// sONion Ring asks one round of two questions when the description is short (under
+// 40 characters), then writes a brief; a change gets an updated brief that restarts
+// from implementation. The plan has 5 steps, STD Dren reports steps 1-3 on attempt 1
+// and 4-5 on attempt 2, and QA fails attempt 1 so the rework loop shows too. Never
+// calls Claude and never writes a file: an allowed Write only changes the reply.
 
 import { CONFIG } from "../../src/shared/config.ts";
 import type { AgentRole } from "../../src/shared/domain/roles.ts";
@@ -40,6 +43,17 @@ function attempt(text: string): number {
   return Number(/\(attempt (\d+)\)/.exec(text)?.[1] ?? "1");
 }
 
+/** The New task description in an intake handoff ("" when there is none). */
+function description(text: string): string {
+  const found = /Description:\n([\s\S]*?)\n\nThis is a new task/.exec(text)?.[1] ?? "";
+  return found === "(no description)" ? "" : found.trim();
+}
+
+/** The text of a `Label:` block in a handoff, up to the next blank line. */
+function blockText(text: string, label: string): string {
+  return new RegExp(`${label}:\\n([\\s\\S]*?)(\\n\\n|$)`).exec(text)?.[1]?.trim() ?? "";
+}
+
 /** A file name for the task, e.g. "Add dark mode" → "src/add-dark-mode.ts". */
 function fileFor(title: string): string {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "change";
@@ -55,10 +69,11 @@ export function scriptFor(role: AgentRole, text: string): Script {
     const step = role === "orchestrator" && text.includes("SUMMARY:") ? "The task finished" : "";
     return scriptFor(role, `From the team, task "the task" (attempt 2): ${step}`);
   }
-  if (!text.startsWith("From ")) return chatScript(role, text);
+  // Task inputs start with their header, or with my change line after a change.
+  if (!text.startsWith("From ") && !text.includes(" changed the task:\n")) return chatScript(role, text);
 
   switch (role) {
-    case "orchestrator":
+    case "orchestrator": {
       if (text.includes("The task finished")) {
         return {
           tools: [],
@@ -66,19 +81,35 @@ export function scriptFor(role: AgentRole, text: string): Script {
             `The team finished **${title}**. Have a look at \`${file}\` and run the tests once yourself.\n\nSUMMARY:\n${title}: added ${file} with a test (scripted run)`,
         };
       }
-      if (title.trim().endsWith("?") && !text.includes("Answer to your question")) {
-        return { tools: [], reply: () => `Before I brief the team I need one detail.\n\nQUESTION:\nShould this change cover every page, or only the settings page?` };
+      if (text.includes("Change request:") || text.includes("Answer to your question about the change") || text.includes("Changes to your updated brief:")) {
+        const request = blockText(text, "Change request") || blockText(text, "Changes to your updated brief") || "the change you asked for";
+        return {
+          tools: [],
+          reply: () =>
+            `Got it, here is the updated brief.\n\nYOU ASKED:\n${request}\n\nBRIEF:\n**Goal:** deliver "${title}" with this change: ${request}\n\n- **In scope:** the change and a test for it\n- **Out of scope:** unrelated files\n- **Done when:** the tests pass and the change shows in the app\n\nRESTART FROM: implementation - the plan still holds, only the code changes`,
+        };
       }
-      return {
-        tools: [{ tool: "Read", input: { file_path: "README.md" } }],
+      const brief = (asked: string) => ({
+        tools: [{ tool: "Read" as const, input: { file_path: "README.md" } }],
         reply: () =>
-          `I read the README and turned the request into a brief.\n\nBRIEF:\nDeliver "${title}". Keep the change small, add a test, and do not touch unrelated files.`,
-      };
+          `I read the README.\n\nYOU ASKED:\n${asked}\n\nBRIEF:\n**Goal:** deliver "${title}".\n\n- **In scope:** the change itself and a test for it\n- **Out of scope:** unrelated files\n- **Done when:** the tests pass and the change shows in the app`,
+      });
+      if (text.includes("Changes to the brief:")) return brief(`"${title}", changed: ${blockText(text, "Changes to the brief")}`);
+      if (text.includes("Answer to your question:")) return brief(`"${title}", with your answers: ${blockText(text, "Answer to your question")}`);
+      if (text.includes("This is a new task") && description(text).length < 40) {
+        return {
+          tools: [],
+          reply: () =>
+            `Before I brief the team I need a few details.\n\nYOU ASKED:\n"${title}", with few details so far.\n\nQUESTION:\n1. Should this cover every page, or only the settings page?\n2. How will you check it is done: a test, or a look in the app?`,
+        };
+      }
+      return brief(`"${title}": ${description(text) || "as described"}`);
+    }
     case "product_manager":
       return {
         tools: [{ tool: "Glob", input: { pattern: "src/**/*.ts" } }],
         reply: () =>
-          `Here is the plan.\n\nPLAN:\n1. Add ${file}\n2. Cover it with a test\n3. Mention it in the README\n\nRESEARCH QUESTIONS:\n- Which test runner does the project use?`,
+          `Here is the plan.\n\nPLAN:\n1. Add ${file}\n2. Wire it into the app\n3. Cover it with a test\n4. Handle the empty case\n5. Mention it in the README\n\nRESEARCH QUESTIONS:\n- Which test runner does the project use?`,
       };
     case "researcher":
       return {
@@ -86,9 +117,11 @@ export function scriptFor(role: AgentRole, text: string): Script {
           { tool: "Grep", input: { pattern: "\"test\"", path: "package.json" } },
           { tool: "Read", input: { file_path: "package.json" } },
         ],
-        reply: () => `FINDINGS:\n- The project runs its tests with \`npm test\`\n- Source files live in src/ and use TypeScript`,
+        reply: () =>
+          `FINDINGS:\n- The project runs its tests with \`npm test\`\n- Source files live in src/ and use TypeScript\n- The README has a Features list to extend`,
       };
-    case "engineer":
+    case "engineer": {
+      const steps = attempt(text) === 1 ? "1, 2, 3" : "4, 5";
       return {
         tools: [
           { tool: "Read", input: { file_path: "package.json" } },
@@ -96,9 +129,10 @@ export function scriptFor(role: AgentRole, text: string): Script {
         ],
         reply: ([, wrote]) =>
           wrote
-            ? `${text.includes("QA failed") || text.includes("asked for changes") ? "Fixed what was reported." : "Implemented the plan."}\n\nCHANGES:\n- ${file}: new feature() function\n\nHOW TO TEST:\n- npm test`
-            : `The Write was denied, so nothing changed yet.\n\nCHANGES:\n- none (the write to ${file} was denied)\n\nHOW TO TEST:\n- nothing to test yet`,
+            ? `${text.includes("QA failed") || text.includes("asked for changes") ? "Fixed what was reported." : "Implemented the plan."}\n\nCHANGES:\n- ${file}: new feature() function\n\nHOW TO TEST:\n- npm test\n\nSTEPS DONE: ${steps}`
+            : `The Write was denied, so nothing changed yet.\n\nCHANGES:\n- none (the write to ${file} was denied)\n\nHOW TO TEST:\n- nothing to test yet\n\nSTEPS DONE: none`,
       };
+    }
     case "qa": {
       const fail = attempt(text) === 1;
       return {

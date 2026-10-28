@@ -615,7 +615,10 @@ await check("role files are copied as given (verdict lines and section markers)"
   assert.ok(buildRolePrompt(ROLES_DIR, "qa", "x", false).includes("Your last line must be exactly one of:\nVERDICT: PASS\nVERDICT: FAIL"));
   assert.ok(buildRolePrompt(ROLES_DIR, "reviewer", "x", false).includes("VERDICT: APPROVED\nVERDICT: CHANGES"));
   const orchestrator = buildRolePrompt(ROLES_DIR, "orchestrator", "x", false);
-  assert.ok(orchestrator.includes("and end with:\nQUESTION:\n<your question>\nOtherwise end with:\nBRIEF:\n<the brief>"));
+  assert.ok(orchestrator.includes("Always start with:\nYOU ASKED:\n"));
+  assert.ok(orchestrator.includes("and end with:\nQUESTION:\n1. <question>\n2. <question>"));
+  assert.ok(orchestrator.includes("RESTART FROM: <planning, research, implementation or testing> - <one line why>"));
+  assert.ok(buildRolePrompt(ROLES_DIR, "engineer", "x", false).includes("STEPS DONE: <the numbers of the plan steps"));
   assert.ok(orchestrator.includes("SUMMARY:\n<one line for the team notes, under 150 characters>"));
   assert.ok(buildRolePrompt(ROLES_DIR, "engineer", "x", false).includes("Never commit unless the user explicitly asks you to."));
 });

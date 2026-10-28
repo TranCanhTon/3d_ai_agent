@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, Plus } from "lucide-react";
+import { ArrowLeft, Plus } from "lucide-react";
 import { useState } from "react";
 import { matchesTaskFilter, sortTasks, TASK_FILTERS, taskFilterCounts, type TaskFilter } from "@/shared/ui/present.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
@@ -23,8 +23,8 @@ export function TasksPanel() {
     return (
       <PanelBody>
         <button type="button" className="btn btn-sm btn-quiet -ml-2" onClick={() => useWorldStore.getState().setSelectedTask(null)}>
-          <ChevronLeft size={14} />
-          All tasks
+          <ArrowLeft size={14} />
+          Tasks
         </button>
         <TaskDetails task={selected} />
       </PanelBody>

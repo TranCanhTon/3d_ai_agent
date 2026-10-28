@@ -1,36 +1,104 @@
 "use client";
 
 import { useState } from "react";
-import { getBackend, openTask } from "@/client/backendClient.ts";
-import { CONFIG } from "@/shared/config.ts";
-import { TASK_PRIORITIES, type TaskPriority } from "@/shared/domain/taskTypes.ts";
-import { taskGroup } from "@/shared/ui/present.ts";
+import { getBackend } from "@/client/backendClient.ts";
+import { CONFIG, type ModelSetting } from "@/shared/config.ts";
+import type { AgentState } from "@/shared/domain/agentTypes.ts";
+import { AGENT_ROLES } from "@/shared/domain/roles.ts";
+import { TASK_PRIORITIES, type TaskPriority, type TaskTeam } from "@/shared/domain/taskTypes.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
-import { errorText, useConnected, useProjectTasks, useSelectedProject } from "../hooks.ts";
-import { ErrorLine, Segmented } from "../ui.tsx";
+import { errorText, useConnected, useProjectAgents, useSelectedProject } from "../hooks.ts";
+import { ModelPicker, modelSettingLabel } from "../ModelPicker.tsx";
+import { Avatar, ErrorLine, Segmented } from "../ui.tsx";
 import { Modal } from "./Modal.tsx";
+
+/** Each agent's chat picker setting when the dialog opens. */
+function teamOf(agents: readonly AgentState[]): TaskTeam {
+  const team = structuredClone(CONFIG.roleModelDefaults);
+  for (const agent of agents) team[agent.role] = { model: agent.model, effort: agent.effort };
+  return team;
+}
+
+/** Six columns: each agent's model and effort for this task (locked once the task is created). */
+function TeamPicker({ agents, team, onChange }: { agents: AgentState[]; team: TaskTeam; onChange: (team: TaskTeam) => void }) {
+  const byRole = new Map(agents.map((a) => [a.role, a]));
+  const first = team[AGENT_ROLES[0]];
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="eyebrow">Team</span>
+        <ModelPicker
+          value={first}
+          up
+          align="right"
+          buttonClassName="text-xs text-mist-300 underline-offset-2 hover:text-mist-100 hover:underline"
+          ariaLabel="Set all agents' model and effort"
+          note="Applies to all six agents."
+          onChange={(setting) => onChange(Object.fromEntries(AGENT_ROLES.map((role) => [role, { ...setting }])) as TaskTeam)}
+        >
+          Set all
+        </ModelPicker>
+      </div>
+      <div className="grid grid-cols-6 gap-1.5">
+        {AGENT_ROLES.map((role, index) => {
+          const agent = byRole.get(role);
+          const setting = team[role];
+          const [model, effort] = modelSettingLabel(setting).split(" · ");
+          return (
+            <div key={role} className="flex min-w-0 flex-col items-center gap-1.5 rounded-lg bg-ink-850 px-1 py-2">
+              {agent !== undefined && <Avatar agent={agent} size={28} />}
+              <span className="w-full truncate text-center text-xs text-mist-300" title={agent?.name}>
+                {agent?.name.split(" ")[0] ?? role}
+              </span>
+              <ModelPicker
+                value={setting}
+                up
+                align={index < 2 ? "left" : index > 3 ? "right" : "center"}
+                ariaLabel={`${agent?.name ?? role}: ${modelSettingLabel(setting)}`}
+                buttonClassName="w-full rounded-md bg-ink-700 px-1 py-1 text-center text-xs leading-tight text-mist-100 hover:bg-ink-600"
+                onChange={(next: ModelSetting) => onChange({ ...team, [role]: next })}
+              >
+                <span className="block truncate font-medium">{model}</span>
+                <span className="block truncate text-mist-500">{effort}</span>
+              </ModelPicker>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs text-mist-500">Locked for this task once it is created. Changing an agent later in the Agents tab does not change this task.</p>
+    </div>
+  );
+}
 
 export function NewTaskDialog() {
   const project = useSelectedProject();
-  const tasks = useProjectTasks();
+  const agents = useProjectAgents();
   const connected = useConnected();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("medium");
+  // The defaults are read once, when the dialog opens.
+  const [team, setTeam] = useState<TaskTeam>(() => teamOf(agents));
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const busy = tasks.some((t) => taskGroup(t) === "active");
+  const orchestrator = agents.find((a) => a.role === "orchestrator") ?? null;
 
   const submit = () => {
     if (project === null || title.trim() === "") return;
     setSending(true);
     setError(null);
     getBackend()
-      .submitTask({ projectId: project.id, title: title.trim(), description: description.trim(), priority })
+      .submitTask({ projectId: project.id, title: title.trim(), description: description.trim(), priority, team })
       .then(
-        (task) => {
-          useWorldStore.getState().setDialog(null);
-          openTask(task.id);
+        () => {
+          const store = useWorldStore.getState();
+          store.setDialog(null);
+          // sONion Ring confirms the task with me in his chat.
+          if (orchestrator !== null) {
+            store.setSelectedAgent(orchestrator.id);
+            store.setAgentView("chat");
+            store.setActiveTab("agents");
+          }
         },
         (e: unknown) => {
           setError(errorText(e));
@@ -42,6 +110,7 @@ export function NewTaskDialog() {
   return (
     <Modal
       title="New task"
+      width={600}
       footer={
         <div className="flex items-center gap-3">
           <p className="text-xs leading-snug text-mist-500">Runs on your Claude Pro plan. Agents ask before editing files or running commands.</p>
@@ -55,8 +124,8 @@ export function NewTaskDialog() {
       }
     >
       <p className="text-xs text-mist-500">
-        For <span className="text-mist-300">{project?.name ?? "no project"}</span>. The orchestrator turns it into a brief, then the team plans, builds, tests and
-        reviews it.
+        For <span className="text-mist-300">{project?.name ?? "no project"}</span>. {orchestrator?.name ?? "The orchestrator"} confirms it with you in the chat; the
+        team starts when you press Start.
       </p>
       <form
         className="space-y-4"
@@ -79,7 +148,7 @@ export function NewTaskDialog() {
         <label className="block space-y-1.5">
           <span className="eyebrow">Description</span>
           <textarea
-            className="field min-h-28 resize-y"
+            className="field min-h-24 resize-y"
             maxLength={CONFIG.maxMessageChars}
             placeholder="What should change, where, and how you will know it works"
             value={description}
@@ -90,7 +159,7 @@ export function NewTaskDialog() {
           <span className="eyebrow block">Priority</span>
           <Segmented label="Priority" value={priority} onChange={setPriority} options={TASK_PRIORITIES.map((p) => ({ value: p, label: p[0]?.toUpperCase() + p.slice(1) }))} />
         </div>
-        {busy && <p className="rounded-lg bg-ink-800 px-3 py-2 text-xs text-mist-300">A task is already running. This one will wait until the current task finishes.</p>}
+        <TeamPicker agents={agents} team={team} onChange={setTeam} />
         <ErrorLine error={error} />
         <button type="submit" hidden />
       </form>

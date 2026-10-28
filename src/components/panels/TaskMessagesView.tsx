@@ -1,9 +1,11 @@
 "use client";
 
-// An agent's task messages (read only), grouped by task and read like a chat:
-// oldest task at the top, the newest at the bottom, oldest message first inside each.
+// An agent's task work (read only), grouped by task and read like a chat: oldest
+// task at the top, the newest at the bottom, oldest message first inside each. Only
+// the agent's own replies and tool lines show: what it was handed (handoffs, my
+// answers wrapped for it, reminders) stays on the server.
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { ensureChatPage, loadChatPage, openTask } from "@/client/backendClient.ts";
 import type { AgentState } from "@/shared/domain/agentTypes.ts";
 import type { ChatMessage } from "@/shared/domain/chatTypes.ts";
@@ -25,6 +27,11 @@ function TaskHeader({ taskId }: { taskId: string }) {
   );
 }
 
+/** The agent's own work: its replies and tool lines. */
+function ownWork(message: ChatMessage): boolean {
+  return message.author.kind === "agent" || message.author.kind === "tool";
+}
+
 /** Messages grouped by task, groups ordered by each task's first message (oldest first). */
 function groupByTask(messages: readonly ChatMessage[]): [string, ChatMessage[]][] {
   const groups = new Map<string, ChatMessage[]>();
@@ -37,7 +44,8 @@ function groupByTask(messages: readonly ChatMessage[]): [string, ChatMessage[]][
 
 export function TaskMessagesView({ agent }: { agent: AgentState }) {
   const key = chatKey(agent.id, "tasks");
-  const messages = useWorldStore((s) => s.chats[key] ?? NO_MESSAGES);
+  const all = useWorldStore((s) => s.chats[key] ?? NO_MESSAGES);
+  const messages = useMemo(() => all.filter(ownWork), [all]);
   const page = useWorldStore((s) => s.chatPages[key]);
   const connected = useConnected();
 

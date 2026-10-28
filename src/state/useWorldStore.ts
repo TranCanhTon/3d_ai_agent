@@ -37,12 +37,16 @@ export type Quality = "high" | "low";
 /** What set the quality: the start rule, my choice in Settings, the frame rate drop, or ?quality= in the URL. */
 export type QualitySource = "default" | "user" | "auto" | "url";
 
-/** A camera move; a new nonce starts it. Back to the overview, or a point on the floor to focus. */
+/** A camera move; a new nonce starts it. Back to the overview, a point on the floor to focus, or one to pan to at the current zoom. */
 export interface CameraRequest {
   nonce: number;
   overview?: true;
   focus?: Vec3;
+  pan?: Vec3;
 }
+
+/** sONion Ring's view in the Agents tab: my chat with him (task cards included) or his task work. */
+export type AgentView = "chat" | "tasks";
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -93,6 +97,7 @@ export interface WorldStore {
   selectedTaskId: string | null;
   activeTab: SideTab;
   panelCollapsed: boolean;
+  agentView: AgentView;
   dialog: Dialog;
   viewInsets: ViewInsets;
   /** Bumped to flash the permission stack (the top bar badge). */
@@ -125,6 +130,7 @@ export interface WorldStore {
   setSelectedTask(taskId: string | null): void;
   setActiveTab(tab: SideTab): void;
   setPanelCollapsed(collapsed: boolean): void;
+  setAgentView(view: AgentView): void;
   setDialog(dialog: Dialog): void;
   setViewInsets(insets: ViewInsets): void;
   flashPermissions(): void;
@@ -226,6 +232,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     selectedProjectId: null,
     selectedAgentId: null,
     selectedTaskId: null,
+    agentView: "chat",
     activeTab: "tasks",
     panelCollapsed: false,
     dialog: null,
@@ -280,6 +287,7 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     setSelectedAgent: (selectedAgentId) => set({ selectedAgentId, deskHighlight: selectedAgentId }),
     setSelectedTask: (selectedTaskId) => set({ selectedTaskId }),
     setActiveTab: (activeTab) => set({ activeTab, panelCollapsed: false }),
+    setAgentView: (agentView) => set({ agentView }),
     setPanelCollapsed: (panelCollapsed) => set({ panelCollapsed }),
     setDialog: (dialog) => set({ dialog }),
     setViewInsets: (viewInsets) => {

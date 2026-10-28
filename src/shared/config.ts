@@ -3,7 +3,6 @@
 
 import { EFFORT_LEVELS, type EffortLevel } from "./domain/agentTypes.ts";
 import type { AgentRole } from "./domain/roles.ts";
-import type { WorkflowPhase } from "./domain/taskTypes.ts";
 
 export interface GitPolicy {
   /** Engineer only. When false the engineer may `git commit` without asking. */
@@ -87,6 +86,8 @@ export interface AppConfig {
   allowedOrigins: string[];
   /** Implementation attempts per task; rework past this aborts the task. */
   maxIterations: number;
+  /** My name in the handoffs ("Ton changed the task:"). */
+  userName: string;
   /** Relative to each project's rootPath. */
   notesPath: string;
   noteMaxChars: number;
@@ -120,8 +121,6 @@ export interface AppConfig {
   chatHistoryMaxLimit: number;
   /** How long a communication arc stays visible. */
   commLinkDurationMs: number;
-  /** Progress range [start, end] (0..1) of each workflow phase. */
-  phaseProgress: Record<WorkflowPhase, readonly [number, number]>;
 
   // ── Server / connection (phase 2) ──
   /** File inside dataDir that holds the per-start session token. */
@@ -188,6 +187,7 @@ export const CONFIG: AppConfig = {
   serverPort: 4317,
   allowedOrigins: ["http://localhost:3000", "http://127.0.0.1:3000"],
   maxIterations: 3,
+  userName: "Ton",
   notesPath: ".agentworld/notes.md",
   noteMaxChars: 200,
   dataDir: "./data",
@@ -244,17 +244,6 @@ export const CONFIG: AppConfig = {
   longChatTokens: 80_000,
   chatHistoryMaxLimit: 200,
   commLinkDurationMs: 2400,
-  phaseProgress: {
-    queued: [0, 0],
-    intake: [0, 0.08],
-    planning: [0.08, 0.2],
-    research: [0.2, 0.36],
-    implementation: [0.36, 0.62],
-    testing: [0.62, 0.78],
-    review: [0.78, 0.94],
-    done: [1, 1],
-    failed: [0, 0],
-  },
 
   sessionTokenFile: "session-token",
   helloTimeoutMs: 5000,

@@ -10,7 +10,7 @@ import { PRIORITY_ORDER, type Task, type WorkflowPhase } from "../domain/taskTyp
 
 // ── Tasks ───────────────────────────────────────────────────────────────────
 
-/** active: the project's current task (running or paused); waiting: in line; done: ended any way. */
+/** active: being confirmed with me, or the project's current task (running or paused); waiting: in line; done: ended any way. */
 export type TaskGroup = "active" | "waiting" | "done";
 export const TASK_FILTERS = ["all", "active", "waiting", "done"] as const;
 export type TaskFilter = (typeof TASK_FILTERS)[number];
@@ -44,14 +44,43 @@ export function sortTasks(tasks: readonly Task[]): Task[] {
   });
 }
 
-/** The task needs me: a question to answer, a pause to resume (a permission card is shown elsewhere). */
-export function taskNeedsMe(task: Task): boolean {
-  return task.endReason === null && (task.question !== null || (task.blockedReason !== null && task.blockedReason !== PAUSE.permission));
+/** A card in my chat with sONion Ring waits for me: a question, a brief to start, a change to apply. */
+export function hasOpenAsk(task: Task): boolean {
+  return task.endReason === null && task.asks.some((a) => a.outcome === "open");
 }
 
-/** Can Resume continue it? Not with a question (answer it) or while a card waits. */
+/** The task needs me: an open card, or a pause to resume (a permission card is shown elsewhere). */
+export function taskNeedsMe(task: Task): boolean {
+  if (task.endReason !== null) return false;
+  return hasOpenAsk(task) || task.question !== null || canResume(task);
+}
+
+/** Waits on me right now (a card, a pause, a permission card): the workflow shows "Waiting for you". */
+export function waitsForMe(task: Task): boolean {
+  return taskNeedsMe(task) || task.blockedReason === PAUSE.permission || task.blockedReason === PAUSE.change;
+}
+
+/** Can Resume continue it? Not with a question (answer it), a change (apply or discard it) or while a card waits. */
 export function canResume(task: Task): boolean {
-  return task.endReason === null && task.blockedReason !== null && task.question === null && task.blockedReason !== PAUSE.permission;
+  return (
+    task.endReason === null &&
+    task.blockedReason !== null &&
+    task.question === null &&
+    task.blockedReason !== PAUSE.permission &&
+    task.blockedReason !== PAUSE.change
+  );
+}
+
+/** Change task is offered from planning to review (not during the final summary), one change at a time. */
+export function canChange(task: Task): boolean {
+  if (task.endReason !== null || !["planning", "research", "implementation", "testing", "review"].includes(task.phase)) return false;
+  if (task.phase === "review" && task.assignedAgentId?.endsWith(":orchestrator") === true) return false;
+  return !task.changes.some((c) => c.outcome === "pending" || c.outcome === "approved");
+}
+
+/** "T-3F9A2C": a short, readable form of the task id. */
+export function shortTaskId(id: string): string {
+  return `T-${(id.split("_")[1] ?? id).slice(0, 6).toUpperCase()}`;
 }
 
 export type TaskTone = "running" | "paused" | "done" | "failed" | "waiting";
@@ -65,7 +94,8 @@ export function taskTone(task: Task): TaskTone {
 
 const PHASE_LABEL: Record<WorkflowPhase, string> = {
   queued: "Waiting in line",
-  intake: "Briefing",
+  intake: "Confirming",
+  awaiting_approval: "Needs your OK",
   planning: "Planning",
   research: "Researching",
   implementation: "Building",
@@ -78,44 +108,6 @@ const PHASE_LABEL: Record<WorkflowPhase, string> = {
 export function phaseLabel(task: Task): string {
   if (task.endReason === "cancelled") return "Cancelled";
   return PHASE_LABEL[task.phase];
-}
-
-// ── Workflow stepper ────────────────────────────────────────────────────────
-
-export type StepState = "done" | "current" | "skipped" | "pending" | "failed";
-
-export interface WorkflowStep {
-  label: string;
-  phase: WorkflowPhase;
-  state: StepState;
-}
-
-const STEPS: { label: string; phase: WorkflowPhase }[] = [
-  { label: "Brief", phase: "intake" },
-  { label: "Plan", phase: "planning" },
-  { label: "Research", phase: "research" },
-  { label: "Build", phase: "implementation" },
-  { label: "QA", phase: "testing" },
-  { label: "Review", phase: "review" },
-  { label: "Done", phase: "done" },
-];
-
-/** Brief → Plan → Research → Build → QA → Review → Done for a task. */
-export function workflowSteps(task: Task): WorkflowStep[] {
-  const skipped = task.history.some((t) => t.signal === "research_skipped");
-  // Where the task is (or was when it ended): failed/cancelled tasks stop at their last phase.
-  const ended = task.phase === "failed" || task.endReason === "cancelled";
-  const lastPhase = task.phase === "failed" ? (task.history.at(-1)?.from ?? "queued") : task.phase;
-  const currentIndex = task.phase === "queued" ? -1 : STEPS.findIndex((s) => s.phase === lastPhase);
-  return STEPS.map((step, index) => {
-    let state: StepState;
-    if (step.phase === "research" && skipped) state = "skipped";
-    else if (task.endReason === "done") state = "done";
-    else if (index < currentIndex) state = "done";
-    else if (index === currentIndex) state = ended ? "failed" : "current";
-    else state = "pending";
-    return { ...step, state };
-  });
 }
 
 // ── Time ────────────────────────────────────────────────────────────────────

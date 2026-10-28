@@ -5,8 +5,8 @@ import { CONFIG } from "@/shared/config.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
 import type { Task, TaskPriority } from "@/shared/domain/taskTypes.ts";
 import { PAUSE } from "@/shared/domain/handoff.ts";
-import { phaseLabel, taskTone, type TaskTone } from "@/shared/ui/present.ts";
-import { useAgent } from "../hooks.ts";
+import { phaseLabel, taskNeedsMe, taskTone, type TaskTone } from "@/shared/ui/present.ts";
+import { useAgent, useOrchestrator } from "../hooks.ts";
 import { Avatar, Badge, cx, ProgressBar, RelativeTime, type BadgeTone } from "../ui.tsx";
 
 const TONE: Record<TaskTone, { label: string; badge: BadgeTone }> = {
@@ -19,6 +19,9 @@ const TONE: Record<TaskTone, { label: string; badge: BadgeTone }> = {
 
 export function toneOf(task: Task): { label: string; badge: BadgeTone } {
   if (task.endReason === "cancelled") return { label: "Cancelled", badge: "bad" };
+  if (task.endReason === null && task.phase === "awaiting_approval") return { label: "Needs your OK", badge: "warn" };
+  if (task.endReason === null && task.blockedReason === PAUSE.change) return { label: "Change waiting", badge: "warn" };
+  if (task.endReason === null && task.phase === "intake" && task.blockedReason === null) return { label: "Confirming", badge: "signal" };
   // A permission card is not a pause: the step goes on as soon as I answer it.
   if (task.endReason === null && task.blockedReason === PAUSE.permission) return { label: "Needs your OK", badge: "warn" };
   return TONE[taskTone(task)];
@@ -30,19 +33,21 @@ export function PriorityTag({ priority }: { priority: TaskPriority }) {
   return <Badge tone={PRIORITY_TONE[priority]}>{priority.charAt(0).toUpperCase() + priority.slice(1)}</Badge>;
 }
 
-/** Progress colour: the working agent's, green when done, amber paused, red failed or cancelled. */
+/** Progress colour: the working agent's, green when done, amber paused or held, red failed or cancelled. */
 export function progressColor(task: Task, agentColor: string | null): string {
   const tone = taskTone(task);
   if (tone === "done") return "var(--color-ok)";
-  if (tone === "paused") return "var(--color-warn)";
+  if (tone === "paused" || task.phase === "awaiting_approval") return "var(--color-warn)";
   if (tone === "failed") return "var(--color-bad)";
   return agentColor ?? "var(--color-signal)";
 }
 
 export function TaskCard({ task, selected = false }: { task: Task; selected?: boolean }) {
   const agent = useAgent(task.assignedAgentId);
+  const orchestrator = useOrchestrator();
   const tone = toneOf(task);
-  const needsAnswer = task.question !== null && task.endReason === null;
+  // A card waits in my chat with sONion Ring (a question, a brief, a change).
+  const needsAnswer = taskNeedsMe(task) && (task.question !== null || task.asks.some((a) => a.outcome === "open"));
   return (
     <button
       type="button"
@@ -78,7 +83,7 @@ export function TaskCard({ task, selected = false }: { task: Task; selected?: bo
         )}
       </div>
       {needsAnswer ? (
-        <p className="rounded-md bg-warn/15 px-2 py-1 text-xs font-medium text-warn">Needs your answer</p>
+        <p className="rounded-md bg-warn/15 px-2 py-1 text-xs font-medium text-warn">Waiting for you in the chat with {orchestrator?.name ?? "the orchestrator"}</p>
       ) : (
         task.blockedReason !== null &&
         task.endReason === null && <p className="truncate text-xs text-warn">{task.blockedReason}</p>

@@ -6,7 +6,7 @@ import type { AgentState, EffortLevel } from "../domain/agentTypes.ts";
 import type { Chat, ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionDecision, PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
-import type { Task, TaskPriority } from "../domain/taskTypes.ts";
+import type { Task, TaskPriority, TaskTeam } from "../domain/taskTypes.ts";
 import type { AgentEvent } from "../events/eventTypes.ts";
 
 // ── Snapshot ────────────────────────────────────────────────────────────────
@@ -71,12 +71,23 @@ export interface CommandArgsMap {
   setChatOnly: { agentId: string; chatOnly: boolean };
   /** Takes effect from the agent's next run (chat or task step); a running one is not changed. */
   setAgentModel: { agentId: string; model: string; effort: EffortLevel | null };
-  submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority };
+  /** Starts sONion Ring's intake at once; `team` is each agent's model and effort for this task (locked). */
+  submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority; team: TaskTeam };
   cancelTask: { taskId: string };
   /** Only for a paused task without a question. */
   resumeTask: { taskId: string };
-  /** My answer to sONion Ring's question; the task continues. */
+  /** My answer to the open question card of the task (any agent's); the agent that asked goes on. */
   answerTask: { taskId: string; text: string };
+  /** Start on a brief card: the brief is locked and the task joins the project's waiting line. */
+  approveTask: { taskId: string };
+  /** Request changes on a brief card: sONion Ring writes it again. */
+  reviseBrief: { taskId: string; text: string };
+  /** Change task: sONion Ring updates the brief; the pipeline holds after the current step. One pending change at a time. */
+  changeTask: { taskId: string; text: string };
+  /** Apply change: the pipeline goes on from RESTART FROM with the new brief (once the running step ends). */
+  applyChange: { taskId: string };
+  /** Discard change: the pipeline goes on where it held. */
+  discardChange: { taskId: string };
   respondPermission: { requestId: string; decision: PermissionDecision };
   /** `text` is what I edited from the message (at most noteMaxChars). */
   pinToNotes: { messageId: string; text: string };
@@ -136,6 +147,11 @@ export interface CommandResultMap {
   cancelTask: null;
   resumeTask: null;
   answerTask: null;
+  approveTask: null;
+  reviseBrief: null;
+  changeTask: null;
+  applyChange: null;
+  discardChange: null;
   respondPermission: null;
   pinToNotes: null;
   /** The notes file's content. */

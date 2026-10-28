@@ -68,6 +68,19 @@ export interface SavedTask {
   questionAnswered: boolean;
   /** The step's full handoff, resent by Resume when its agent has not seen it. */
   handoff: SavedHandoff | null;
+  /** A step's reply kept while a change waits for my OK (Discard hands it on). */
+  held: { step: PipelineStep; text: string } | null;
+  /** sONion Ring working on a change to the running task, beside the step. */
+  side: SavedLane | null;
+  /** My change text, put before the next handoff ("Ton changed the task:"). */
+  changeNote: string | null;
+}
+
+/** An input to sONion Ring about a change, outside the step. */
+export interface SavedLane {
+  inputId: string | null;
+  started: boolean;
+  reminderSent: boolean;
 }
 
 export interface LoadedData {
@@ -118,6 +131,9 @@ const storedMessageSchema = chatMessageSchema.extend({ chatId: z.string().nullab
 
 const savedTaskSchema = z.object({
   task: taskSchema,
+  held: z.object({ step: z.enum(PIPELINE_STEPS), text: z.string() }).nullable().default(null),
+  side: z.object({ inputId: z.string().nullable(), started: z.boolean(), reminderSent: z.boolean() }).nullable().default(null),
+  changeNote: z.string().nullable().default(null),
   step: z.enum(PIPELINE_STEPS).nullable(),
   inputId: z.string().nullable(),
   started: z.boolean(),

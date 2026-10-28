@@ -16,12 +16,27 @@ import {
 } from "../src/shared/domain/messageQueue.ts";
 import { evaluatePermission, explainPermission, type PermissionConfig, type PermissionVerdict } from "../src/shared/domain/permissions.ts";
 import { ADD_NOTE_SDK_NAME, AGENT_ROLES, builtInToolsFor, canonicalToolName, ROLE_DEFINITIONS, type AgentRole } from "../src/shared/domain/roles.ts";
-import type { Task, WorkflowSignal } from "../src/shared/domain/taskTypes.ts";
-import { applySignal, blockTask, canTransition, createTask, isTerminal, unblockTask } from "../src/shared/domain/workflow.ts";
+import type { RestartStep, Task, WorkflowSignal } from "../src/shared/domain/taskTypes.ts";
+import {
+  applySignal,
+  blockTask,
+  canTransition,
+  claimSteps,
+  createTask,
+  holdsSlot,
+  isTerminal,
+  taskProgress,
+  tickClaimedSteps,
+  unblockTask,
+  workflowRowStates,
+} from "../src/shared/domain/workflow.ts";
 import {
   answerHandoff,
   ASK_LINE,
   bulletItems,
+  changeAnswerHandoff,
+  changedTaskLine,
+  changeHandoff,
   continueText,
   implementationHandoff,
   intakeHandoff,
@@ -29,8 +44,12 @@ import {
   parseReply,
   planningHandoff,
   planSteps,
+  readChangeResult,
+  readRestartFrom,
   readStepResult,
   reminderText,
+  reviseBriefHandoff,
+  stepNumbers,
   researchHandoff,
   reviewHandoff,
   reworkHandoff,
@@ -54,8 +73,10 @@ import {
   sortTasks,
   taskFilterCounts,
   taskGroup,
+  canChange,
+  shortTaskId,
   taskNeedsMe,
-  workflowSteps,
+  waitsForMe,
 } from "../src/shared/ui/present.ts";
 import type { AgentEvent } from "../src/shared/events/eventTypes.ts";
 import { STATION_IDS } from "../src/shared/domain/agentTypes.ts";
@@ -179,27 +200,33 @@ check("newId is prefixed and unique", () => {
 // ── 3. Workflow ─────────────────────────────────────────────────────────────
 describe("3. Workflow");
 
-const wf = { maxIterations: CONFIG.maxIterations, phaseProgress: CONFIG.phaseProgress };
+const wf = { maxIterations: CONFIG.maxIterations };
 let clock = 1_700_000_000_000;
+const TEAM = structuredClone(CONFIG.roleModelDefaults);
 
 function newTask(): Task {
-  return createTask("task_test", { projectId: "proj_test", title: "Add login" }, clock);
+  return createTask("task_test", { projectId: "proj_test", title: "Add login", team: TEAM }, clock);
 }
 
-function signal(task: Task, s: WorkflowSignal): Task {
-  const result = applySignal(task, s, ++clock, wf);
+function signal(task: Task, s: WorkflowSignal, restart?: RestartStep): Task {
+  const result = applySignal(task, s, ++clock, wf, restart);
   if (!result.ok) throw new Error(result.error);
   return result.task;
 }
 
 function run(task: Task, signals: WorkflowSignal[]): Task {
-  return signals.reduce(signal, task);
+  return signals.reduce((t, s) => signal(t, s), task);
 }
 
-const TO_TESTING: WorkflowSignal[] = ["picked_up", "delegated", "plan_ready", "findings_published", "submitted"];
+const TO_PLANNING: WorkflowSignal[] = ["brief_ready", "approved_by_user", "picked_up"];
+const TO_TESTING: WorkflowSignal[] = [...TO_PLANNING, "plan_ready", "findings_published", "submitted"];
 
-check("full happy path queued to done", () => {
-  const task = run(newTask(), [...TO_TESTING, "tests_passed", "approved"]);
+check("a new task starts at intake with its team; full happy path to done", () => {
+  const fresh = newTask();
+  assert.equal(fresh.phase, "intake");
+  assert.equal(fresh.status, "assigned");
+  assert.deepEqual(fresh.team, CONFIG.roleModelDefaults);
+  const task = run(fresh, [...TO_TESTING, "tests_passed", "approved"]);
   assert.equal(task.phase, "done");
   assert.equal(task.status, "completed");
   assert.equal(task.progress, 1);
@@ -207,15 +234,35 @@ check("full happy path queued to done", () => {
   assert.equal(task.completedAt, clock);
   assert.deepEqual(
     task.history.map((h) => h.to),
-    ["intake", "planning", "research", "implementation", "testing", "review", "done"],
+    ["awaiting_approval", "queued", "planning", "research", "implementation", "testing", "review", "done"],
   );
 });
 
 check("status is a projection of phase", () => {
-  const statuses = [newTask(), ...TO_TESTING.map((_, i) => run(newTask(), TO_TESTING.slice(0, i + 1)))].map(
-    (t) => t.status,
-  );
-  assert.deepEqual(statuses, ["queued", "assigned", "in_progress", "in_progress", "in_progress", "testing"]);
+  const statuses = [newTask(), ...TO_TESTING.map((_, i) => run(newTask(), TO_TESTING.slice(0, i + 1)))].map((t) => t.status);
+  assert.deepEqual(statuses, ["assigned", "awaiting_approval", "queued", "in_progress", "in_progress", "in_progress", "testing"]);
+});
+
+check("brief_ready, approved_by_user and brief_changes_requested move between intake, awaiting_approval and queued", () => {
+  const awaiting = signal(newTask(), "brief_ready");
+  assert.equal(awaiting.phase, "awaiting_approval");
+  assert.equal(signal(awaiting, "brief_changes_requested").phase, "intake");
+  assert.equal(signal(awaiting, "approved_by_user").phase, "queued");
+  assert.equal(canTransition("intake", "approved_by_user"), false, "nothing starts before a brief");
+  assert.equal(canTransition("intake", "picked_up"), false, "intake does not take the slot");
+  assert.equal(canTransition("awaiting_approval", "picked_up"), false, "nothing starts before Start");
+  assert.equal(signal(awaiting, "abort").phase, "failed", "cancel from awaiting_approval");
+  assert.equal(signal(newTask(), "abort").phase, "failed", "cancel from intake");
+});
+
+check("only planning to review hold the project's slot", () => {
+  const at = (signals: WorkflowSignal[]) => holdsSlot(run(newTask(), signals));
+  assert.equal(at([]), false);
+  assert.equal(at(["brief_ready"]), false);
+  assert.equal(at(["brief_ready", "approved_by_user"]), false);
+  assert.equal(at(TO_PLANNING), true);
+  assert.equal(at(TO_TESTING), true);
+  assert.equal(at([...TO_TESTING, "tests_passed", "approved"]), false);
 });
 
 check("testing + tests_failed goes to implementation and bumps iteration", () => {
@@ -223,11 +270,10 @@ check("testing + tests_failed goes to implementation and bumps iteration", () =>
   const reworked = signal(testing, "tests_failed");
   assert.equal(reworked.phase, "implementation");
   assert.equal(reworked.iteration, testing.iteration + 1);
-  assert.equal(reworked.progress, CONFIG.phaseProgress.implementation[0]);
 });
 
 check("queued + approved is rejected", () => {
-  const task = newTask();
+  const task = run(newTask(), ["brief_ready", "approved_by_user"]);
   assert.equal(canTransition("queued", "approved"), false);
   const result = applySignal(task, "approved", clock, wf);
   assert.equal(result.ok, false);
@@ -261,7 +307,7 @@ check("review changes_requested also reworks", () => {
 });
 
 check("blocked overrides status and clears on unblock or terminal", () => {
-  const planning = run(newTask(), ["picked_up", "delegated"]);
+  const planning = run(newTask(), TO_PLANNING);
   const blocked = blockTask(planning, "Usage limit reached", ++clock);
   assert.equal(blocked.status, "blocked");
   assert.equal(blocked.blockedReason, "Usage limit reached");
@@ -273,7 +319,7 @@ check("blocked overrides status and clears on unblock or terminal", () => {
 });
 
 check("planning + research_skipped goes straight to implementation (attempt 1)", () => {
-  const planning = run(newTask(), ["picked_up", "delegated"]);
+  const planning = run(newTask(), TO_PLANNING);
   const skipped = signal(planning, "research_skipped");
   assert.equal(skipped.phase, "implementation");
   assert.equal(skipped.iteration, 1);
@@ -281,9 +327,80 @@ check("planning + research_skipped goes straight to implementation (attempt 1)",
   assert.deepEqual(run(skipped, ["submitted", "tests_passed", "approved"]).phase, "done");
 });
 
-check("a new task has no sessions, outputs, question, end reason or summary", () => {
+check("change_requested and change_discarded keep the phase; only running phases take them", () => {
+  const testing = run(newTask(), TO_TESTING);
+  assert.equal(signal(testing, "change_requested").phase, "testing");
+  assert.equal(signal(signal(testing, "change_requested"), "change_discarded").phase, "testing");
+  for (const phase of ["intake", "awaiting_approval", "queued"] as const) {
+    assert.equal(canTransition(phase, "change_requested"), false, phase);
+    assert.equal(canTransition(phase, "change_applied", "planning"), false, phase);
+  }
+});
+
+check("change_applied goes to the restart phase and starts the attempts over", () => {
+  // Attempt 3 in review: a change back to implementation is attempt 1 again.
+  let review = run(newTask(), TO_TESTING);
+  review = run(review, ["tests_failed", "submitted", "tests_failed", "submitted", "tests_passed"]);
+  assert.equal(review.iteration, 3);
+  const impl = signal(review, "change_applied", "implementation");
+  assert.deepEqual([impl.phase, impl.iteration], ["implementation", 1]);
+  assert.equal(signal(review, "change_applied", "testing").iteration, 1);
+  assert.deepEqual([signal(review, "change_applied", "planning").phase, signal(review, "change_applied", "planning").iteration], ["planning", 0]);
+  assert.equal(signal(review, "change_applied", "research").phase, "research");
+  assert.equal(applySignal(review, "change_applied", clock, wf).ok, false, "a restart phase is required");
+  // Two more failed attempts are allowed again.
+  const again = run(impl, ["submitted", "tests_failed", "submitted", "tests_failed", "submitted"]);
+  assert.equal(again.iteration, 3);
+  assert.equal(signal(again, "tests_failed").phase, "failed");
+});
+
+check("STEPS DONE claims tick only when QA passes; ticks are kept; unknown numbers are ignored", () => {
+  const plan = { ...newTask(), subtasks: [1, 2, 3, 4, 5].map((n) => ({ id: `s${n}`, title: `Step ${n}`, done: false })) };
+  const attempt1 = claimSteps(plan, [1, 2, 3, 9, 0]);
+  assert.deepEqual(attempt1.claimedSteps, [1, 2, 3]);
+  // QA fails attempt 1: nothing ticks, the claims stay.
+  assert.ok(attempt1.subtasks.every((s) => !s.done));
+  const attempt2 = claimSteps(attempt1, [4, 5]);
+  assert.deepEqual(attempt2.claimedSteps, [1, 2, 3, 4, 5]);
+  const passed = tickClaimedSteps(attempt2);
+  assert.deepEqual(passed.subtasks.map((s) => s.done), [true, true, true, true, true]);
+  assert.deepEqual(passed.claimedSteps, []);
+  const later = tickClaimedSteps(claimSteps(passed, []));
+  assert.ok(later.subtasks.every((s) => s.done), "ticks are kept");
+});
+
+check("workflow rows and progress: equal shares, current half, skipped counts as done", () => {
+  const rows = (task: Task) => Object.entries(workflowRowStates(task)).map(([row, state]) => `${row}:${state}`);
+  const intake = newTask();
+  assert.deepEqual(rows(intake), ["intake:current", "planning:upcoming", "research:upcoming", "implementation:upcoming", "testing:upcoming", "review:upcoming", "summary:upcoming"]);
+  assert.equal(taskProgress(intake), 0.5 / 7);
+  assert.equal(taskProgress(signal(intake, "brief_ready")), 0.5 / 7, "waiting for Start is still the intake row");
+  const queued = run(newTask(), ["brief_ready", "approved_by_user"]);
+  assert.deepEqual(rows(queued).slice(0, 2), ["intake:done", "planning:upcoming"]);
+  assert.equal(taskProgress(queued), 1 / 7);
+  const skipped = run(newTask(), [...TO_PLANNING, "research_skipped"]);
+  assert.deepEqual(rows(skipped).slice(0, 4), ["intake:done", "planning:done", "research:skipped", "implementation:current"]);
+  assert.equal(taskProgress(skipped), 3.5 / 7);
+  // Rework: testing and review go back to upcoming.
+  const rework = run(newTask(), [...TO_TESTING, "tests_passed", "changes_requested"]);
+  assert.deepEqual(rows(rework).slice(3, 6), ["implementation:current", "testing:upcoming", "review:upcoming"]);
+  // The summary step runs while the phase is review, on sONion Ring.
+  const summary = { ...run(newTask(), [...TO_TESTING, "tests_passed"]), assignedAgentId: "proj_test:orchestrator" };
+  assert.deepEqual(rows(summary).slice(5), ["review:done", "summary:current"]);
+  assert.equal(taskProgress(summary), 6.5 / 7);
+  const failed = run(newTask(), [...TO_TESTING, "abort"]);
+  assert.deepEqual(rows(failed).slice(3, 6), ["implementation:done", "testing:current", "review:upcoming"], "stops where it failed");
+  const done = { ...run(newTask(), [...TO_TESTING, "tests_passed", "approved"]), endReason: "done" as const };
+  assert.ok(rows(done).every((r) => r.endsWith(":done")));
+  assert.equal(taskProgress(done), 1);
+});
+
+check("a new task has no sessions, outputs, question, brief, cards, changes, end reason or summary", () => {
   const task = newTask();
-  assert.deepEqual([task.sessions, task.outputs, task.question, task.endReason, task.summary], [{}, {}, null, null, null]);
+  assert.deepEqual(
+    [task.sessions, task.outputs, task.question, task.approvedBrief, task.asks, task.changes, task.claimedSteps, task.endReason, task.summary],
+    [{}, {}, null, null, [], [], [], null, null],
+  );
 });
 
 // ── 3b. Handoff markers ─────────────────────────────────────────────────────
@@ -310,7 +427,7 @@ check("a marker word inside a sentence is not a marker; marker words are case se
 check("sections run to the next marker; the last occurrence wins", () => {
   const reply = "CHANGES:\n- a.ts: old\nHOW TO TEST:\n- run it\n\nSorry, again:\nCHANGES:\n- b.ts: new\nHOW TO TEST:\n- npm test";
   const result = readStepResult("implementation", reply);
-  assert.deepEqual(result, { kind: "changes", changes: "- b.ts: new", howToTest: "- npm test" });
+  assert.deepEqual(result, { kind: "changes", changes: "- b.ts: new", howToTest: "- npm test", stepsDone: [] });
 });
 
 check("two VERDICT lines: the last one wins; only the role's values count", () => {
@@ -344,7 +461,8 @@ check("plan steps become subtasks; findings bullets become findings", () => {
 });
 
 check("missing markers name what is missing", () => {
-  assert.deepEqual(readStepResult("intake", "Sure, I can help."), { kind: "missing", marker: "BRIEF:" });
+  assert.deepEqual(readStepResult("intake", "Sure, I can help."), { kind: "missing", marker: "YOU ASKED:" });
+  assert.deepEqual(readStepResult("intake", "YOU ASKED:\nDark mode"), { kind: "missing", marker: "BRIEF:" });
   assert.deepEqual(readStepResult("planning", "PLAN:\n1. x"), { kind: "missing", marker: "RESEARCH QUESTIONS:" });
   assert.deepEqual(readStepResult("planning", "RESEARCH QUESTIONS:\nnone"), { kind: "missing", marker: "PLAN:" });
   assert.deepEqual(readStepResult("research", "FINDINGS:\n"), { kind: "missing", marker: "FINDINGS:" });
@@ -352,12 +470,46 @@ check("missing markers name what is missing", () => {
   assert.deepEqual(readStepResult("summary", "All done!"), { kind: "missing", marker: "SUMMARY:" });
 });
 
-check("intake: QUESTION or BRIEF, whichever comes last; no second question after my answer", () => {
-  assert.deepEqual(readStepResult("intake", "QUESTION:\nWhich pages?"), { kind: "question", question: "Which pages?" });
-  assert.deepEqual(readStepResult("intake", "BRIEF:\nDark mode everywhere"), { kind: "brief", brief: "Dark mode everywhere" });
-  assert.equal(readStepResult("intake", "BRIEF:\nx\nQUESTION:\nWhich pages?").kind, "question");
-  assert.equal(readStepResult("intake", "QUESTION:\nWhich pages?", false).kind, "missing");
+check("intake: YOU ASKED plus QUESTION or BRIEF, whichever comes last; it may ask every round", () => {
+  assert.deepEqual(readStepResult("intake", "YOU ASKED:\nDark mode\nQUESTION:\n1. Which pages?\n2. Which shade?"), {
+    kind: "question",
+    question: "1. Which pages?\n2. Which shade?",
+    youAsked: "Dark mode",
+  });
+  assert.deepEqual(readStepResult("intake", "**YOU ASKED:** Dark mode\n\nBRIEF:\nDark mode everywhere"), {
+    kind: "brief",
+    brief: "Dark mode everywhere",
+    youAsked: "Dark mode",
+  });
+  assert.equal(readStepResult("intake", "YOU ASKED:\nx\nBRIEF:\nx\nQUESTION:\nWhich pages?").kind, "question");
+  assert.equal(readStepResult("intake", "YOU ASKED:\nx\nQUESTION:\nWhich pages?", false).kind, "question", "no limit on intake rounds");
+  assert.equal(readStepResult("intake", "BRIEF:\nDark mode everywhere").kind, "missing", "YOU ASKED is required");
   assert.deepEqual(readStepResult("summary", "Done.\nSUMMARY:\n- Added dark mode to all pages\n"), { kind: "summary", summary: "Added dark mode to all pages" });
+});
+
+check("YOU ASKED, RESTART FROM and STEPS DONE are markers; the last occurrence wins", () => {
+  const parsed = parseReply("YOU ASKED: one\nYOU ASKED: two\nRESTART FROM: testing\nSTEPS DONE: 1, 2");
+  assert.equal(parsed.sections["YOU ASKED"], "two");
+  assert.equal(parsed.values["RESTART FROM"], "testing");
+  assert.deepEqual(stepNumbers(parsed.sections["STEPS DONE"]), [1, 2]);
+  assert.deepEqual(stepNumbers("none"), []);
+  assert.deepEqual(stepNumbers("1, 2 and 2, step 4"), [1, 2, 4]);
+  const impl = readStepResult("implementation", "CHANGES:\n- a.ts\nHOW TO TEST:\n- npm test\n**STEPS DONE:** 1, 3");
+  assert.ok(impl.kind === "changes");
+  assert.deepEqual(impl.stepsDone, [1, 3]);
+});
+
+check("RESTART FROM: only planning, research, implementation or testing; anything else is missing", () => {
+  assert.deepEqual(readRestartFrom("implementation"), { step: "implementation", why: "" });
+  assert.deepEqual(readRestartFrom("**Testing** - only the checks change"), { step: "testing", why: "only the checks change" });
+  assert.deepEqual(readRestartFrom("planning\nThe scope grew"), { step: "planning", why: "The scope grew" });
+  for (const bad of ["review", "intake", "implement", "", "the start"]) assert.equal(readRestartFrom(bad), null, bad);
+  const ok = "YOU ASKED:\nMove it\nBRIEF:\nNew brief\nRESTART FROM: implementation - the toggle moves";
+  assert.deepEqual(readChangeResult(ok), { kind: "change", youAsked: "Move it", brief: "New brief", restartFrom: "implementation", why: "the toggle moves" });
+  assert.deepEqual(readChangeResult("YOU ASKED:\nx\nBRIEF:\ny\nRESTART FROM: review"), { kind: "missing", marker: "RESTART FROM:" });
+  assert.deepEqual(readChangeResult("YOU ASKED:\nx\nBRIEF:\ny"), { kind: "missing", marker: "RESTART FROM:" });
+  assert.deepEqual(readChangeResult("BRIEF:\ny\nRESTART FROM: testing"), { kind: "missing", marker: "YOU ASKED:" });
+  assert.deepEqual(readChangeResult("YOU ASKED:\nx\nQUESTION:\n1. Which page?"), { kind: "question", question: "1. Which page?", youAsked: "x" });
 });
 
 const team: TeamNames = {
@@ -377,11 +529,13 @@ check("every handoff starts with who it is from and the task", () => {
     researchHandoff(team, darkMode, "brief", "plan", "- which?"),
     implementationHandoff(team, darkMode, "brief", "plan", null),
     implementationHandoff(team, darkMode, "brief", "plan", "- use X"),
-    reworkHandoff(team, darkMode, 2, "qa", "VERDICT: FAIL"),
-    reworkHandoff(team, darkMode, 3, "review", "VERDICT: CHANGES"),
-    testingHandoff(team, darkMode, 2, "plan", "changes", "steps"),
+    reworkHandoff(team, darkMode, 2, "qa", "VERDICT: FAIL", "brief"),
+    reworkHandoff(team, darkMode, 3, "review", "VERDICT: CHANGES", "brief"),
+    testingHandoff(team, darkMode, 2, "brief", "plan", "changes", "steps"),
     reviewHandoff(team, darkMode, 1, "brief", "plan", "changes"),
-    summaryHandoff(team, darkMode, 1, "changes", "PASS", "APPROVED"),
+    summaryHandoff(team, darkMode, 1, "brief", "changes", "PASS", "APPROVED"),
+    reviseBriefHandoff(darkMode, "Only settings"),
+    changeHandoff(darkMode, "Move it", { approvedBrief: "b", plan: "p", changes: null, verdicts: [], currentStep: "Planning (Pronelio Maximus)" }),
   ].map((text) => text.split("\n")[0]);
   assert.deepEqual(firstLines, [
     'From you, task "Add dark mode":',
@@ -394,21 +548,41 @@ check("every handoff starts with who it is from and the task", () => {
     'From STD Dren, task "Add dark mode" (attempt 2):',
     'From Quantarino Archilles, task "Add dark mode" (attempt 1):',
     'From Rabies, task "Add dark mode":',
+    'From you, task "Add dark mode":',
+    'From you, task "Add dark mode":',
   ]);
 });
 
 check("handoffs carry what the next agent needs and the required ending", () => {
   const intake = intakeHandoff(darkMode);
-  assert.ok(intake.includes("Priority: high") && intake.includes("Description:\nAll pages") && intake.includes("QUESTION:"));
+  assert.ok(intake.includes("Priority: high") && intake.includes("Description:\nAll pages") && intake.includes("QUESTION:") && intake.includes("YOU ASKED:"));
   assert.ok(planningHandoff(team, darkMode, "Make it dark").includes("BRIEF:\nMake it dark"));
   const research = researchHandoff(team, darkMode, "b", "1. x", "- Which icon set?");
   assert.ok(research.includes("PLAN:\n1. x") && research.includes("RESEARCH QUESTIONS:\n- Which icon set?") && research.includes("End with FINDINGS:."));
   assert.ok(implementationHandoff(team, darkMode, "b", "p", null).includes("FINDINGS:\nnone (no research needed)"));
-  const rework = reworkHandoff(team, darkMode, 2, "qa", "npm test failed\nVERDICT: FAIL");
-  assert.ok(rework.includes("QA failed. Report:\nnpm test failed") && rework.includes("Do not commit or push"));
-  assert.ok(testingHandoff(team, darkMode, 2, "p", "- a.ts", "- run").includes("HOW TO TEST:\n- run"));
+  const rework = reworkHandoff(team, darkMode, 2, "qa", "npm test failed\nVERDICT: FAIL", "Make it dark");
+  assert.ok(rework.includes("QA failed. Report:\nnpm test failed") && rework.includes("Do not commit or push") && rework.includes("STEPS DONE:"));
+  assert.ok(implementationHandoff(team, darkMode, "b", "p", null).includes("STEPS DONE:"));
+  // Every handoff after Start carries the approved brief.
+  for (const text of [rework, testingHandoff(team, darkMode, 2, "Make it dark", "p", "- a.ts", "- run"), summaryHandoff(team, darkMode, 1, "Make it dark", "c", "PASS", "APPROVED")]) {
+    assert.ok(text.includes("BRIEF:\nMake it dark"), text.split("\n")[0]);
+  }
+  assert.ok(testingHandoff(team, darkMode, 2, "b", "p", "- a.ts", "- run").includes("HOW TO TEST:\n- run"));
   assert.ok(reviewHandoff(team, darkMode, 1, "b", "p", "- a.ts").includes("QA passed."));
-  assert.ok(summaryHandoff(team, darkMode, 2, "- a.ts", "PASS", "APPROVED").includes("after 2 attempts. QA: PASS. Review: APPROVED."));
+  assert.ok(summaryHandoff(team, darkMode, 2, "b", "- a.ts", "PASS", "APPROVED").includes("after 2 attempts. QA: PASS. Review: APPROVED."));
+  const change = changeHandoff(darkMode, "Put the toggle in settings", {
+    approvedBrief: "Dark mode everywhere",
+    plan: "1. Add the toggle",
+    changes: "- Header.tsx: toggle",
+    verdicts: ["QA, attempt 1: FAIL"],
+    currentStep: "Implementation (STD Dren)",
+  });
+  for (const part of ["Change request:\nPut the toggle in settings", "Approved brief:\nDark mode everywhere", "Plan:\n1. Add the toggle", "Latest CHANGES from the engineer:\n- Header.tsx: toggle", "- QA, attempt 1: FAIL", "Current step: Implementation (STD Dren)", "RESTART FROM:", "YOU ASKED:"]) {
+    assert.ok(change.includes(part), part);
+  }
+  assert.ok(reviseBriefHandoff(darkMode, "Only settings").includes("Changes to the brief:\nOnly settings"));
+  assert.ok(changeAnswerHandoff(darkMode, "Yes").endsWith("RESTART FROM: (or QUESTION:)."));
+  assert.equal(changedTaskLine("Ton", " Move it \n"), "Ton changed the task:\nMove it");
   assert.equal(continueText("testing"), "Continue where you left off. Finish with the required ending: VERDICT: PASS or VERDICT: FAIL.");
   assert.ok(reminderText("planning").endsWith("PLAN: and RESEARCH QUESTIONS:"));
 });
@@ -418,20 +592,21 @@ check("every handoff but the summary says the agent may ask me; my answer names 
     planningHandoff(team, darkMode, "b"),
     researchHandoff(team, darkMode, "b", "p", "- q"),
     implementationHandoff(team, darkMode, "b", "p", null),
-    reworkHandoff(team, darkMode, 2, "qa", "r"),
-    testingHandoff(team, darkMode, 1, "p", "c", "t"),
+    reworkHandoff(team, darkMode, 2, "qa", "r", "b"),
+    testingHandoff(team, darkMode, 1, "b", "p", "c", "t"),
     reviewHandoff(team, darkMode, 1, "b", "p", "c"),
   ];
   for (const text of asking) assert.ok(text.endsWith(ASK_LINE), text.split("\n")[0]);
-  assert.ok(!summaryHandoff(team, darkMode, 1, "c", "PASS", "APPROVED").includes("QUESTION:"));
+  assert.ok(!summaryHandoff(team, darkMode, 1, "b", "c", "PASS", "APPROVED").includes("QUESTION:"));
   const answer = answerHandoff(darkMode, "implementation", "Use a toggle in the header");
-  assert.ok(answer.includes("Answer to your question:\nUse a toggle in the header") && answer.endsWith("end with CHANGES: and HOW TO TEST:."));
+  assert.ok(answer.includes("Answer to your question:\nUse a toggle in the header") && answer.endsWith("end with CHANGES:, HOW TO TEST: and STEPS DONE:."));
 });
 
 check("any step but the summary may ask: QUESTION after the ending (or without it) wins, once", () => {
   assert.deepEqual(readStepResult("implementation", "I need to know one thing.\nQUESTION:\nToggle in the header or in settings?"), {
     kind: "question",
     question: "Toggle in the header or in settings?",
+    youAsked: null,
   });
   assert.equal(readStepResult("planning", "QUESTION:\nOne page or all?\nPLAN:\n1. x\nRESEARCH QUESTIONS:\nnone").kind, "plan", "ending after the question wins");
   assert.equal(readStepResult("testing", "VERDICT: PASS\nQUESTION:\nShould empty input be allowed?").kind, "question");
@@ -800,10 +975,15 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
   { name: "setChatOnly", args: { agentId: "proj_1:qa", chatOnly: true } },
   { name: "setAgentModel", args: { agentId: "proj_1:researcher", model: "sonnet", effort: "medium" } },
   { name: "setAgentModel", args: { agentId: "proj_1:engineer", model: "opus", effort: null } },
-  { name: "submitTask", args: { projectId: "proj_1", title: "Add dark mode", description: "All pages", priority: "high" } },
+  { name: "submitTask", args: { projectId: "proj_1", title: "Add dark mode", description: "All pages", priority: "high", team: CONFIG.roleModelDefaults } },
   { name: "cancelTask", args: { taskId: "task_1" } },
   { name: "resumeTask", args: { taskId: "task_1" } },
   { name: "answerTask", args: { taskId: "task_1", text: "Only the settings page" } },
+  { name: "approveTask", args: { taskId: "task_1" } },
+  { name: "reviseBrief", args: { taskId: "task_1", text: "Only the settings page" } },
+  { name: "changeTask", args: { taskId: "task_1", text: "Put the toggle in settings" } },
+  { name: "applyChange", args: { taskId: "task_1" } },
+  { name: "discardChange", args: { taskId: "task_1" } },
   { name: "respondPermission", args: { requestId: "perm_1", decision: "allow" } },
   { name: "pinToNotes", args: { messageId: "msg_1", text: "We always use Tailwind" } },
   { name: "getNotes", args: { projectId: "proj_1" } },
@@ -816,7 +996,7 @@ const EXAMPLE_COMMANDS: ClientCommand[] = [
 
 check("every command name has an example", () => {
   const names = new Set(EXAMPLE_COMMANDS.map((c) => c.name));
-  assert.equal(names.size, 22);
+  assert.equal(names.size, 27);
 });
 
 for (const command of EXAMPLE_COMMANDS) {
@@ -912,7 +1092,7 @@ const snapshot: WorldSnapshot = {
     lastError: null,
     updatedAt: now,
   })),
-  tasks: [run(createTask("task_1", { projectId, title: "Add dark mode" }, now), ["picked_up"])],
+  tasks: [run(createTask("task_1", { projectId, title: "Add dark mode", team: TEAM }, now), TO_PLANNING)],
   links: [{ id: "link_1", from: makeAgentId(projectId, "orchestrator"), to: engineerId, kind: "assign", startedAt: now, endsAt: now + 2400 }],
   pendingPermissions: [
     { id: "perm_1", projectId, agentId: engineerId, toolName: "Bash", summary: "git push", input: { command: "git push" }, createdAt: now },
@@ -974,12 +1154,12 @@ describe("7. UI helpers");
 
 {
   const t0 = 1_700_000_000_000;
-  const make = (id: string, patch: Partial<Task>): Task => ({ ...createTask(id, { projectId: "proj_1", title: id }, t0), ...patch });
+  const make = (id: string, patch: Partial<Task>): Task => ({ ...createTask(id, { projectId: "proj_1", title: id, team: TEAM }, t0), ...patch });
   const active = make("active", { phase: "implementation", updatedAt: t0 + 50 });
   const paused = make("paused", { phase: "testing", blockedReason: "Stopped by you", status: "blocked", updatedAt: t0 + 10 });
-  const waitLow = make("wait-low", { priority: "low", createdAt: t0 + 1 });
-  const waitHighNew = make("wait-high-new", { priority: "high", createdAt: t0 + 5 });
-  const waitHighOld = make("wait-high-old", { priority: "high", createdAt: t0 + 2 });
+  const waitLow = make("wait-low", { phase: "queued", priority: "low", createdAt: t0 + 1 });
+  const waitHighNew = make("wait-high-new", { phase: "queued", priority: "high", createdAt: t0 + 5 });
+  const waitHighOld = make("wait-high-old", { phase: "queued", priority: "high", createdAt: t0 + 2 });
   const doneOld = make("done-old", { phase: "done", endReason: "done", completedAt: t0 + 100 });
   const failedNew = make("failed-new", { phase: "failed", endReason: "failed", completedAt: t0 + 200 });
   const cancelled = make("cancelled", { phase: "failed", endReason: "cancelled", completedAt: t0 + 150 });
@@ -1009,22 +1189,27 @@ describe("7. UI helpers");
     assert.equal(taskNeedsMe(paused), true);
     assert.equal(canResume(paused), true);
     assert.equal(taskNeedsMe(card), false);
+    assert.equal(waitsForMe(card), true, "the workflow says Waiting for you while a permission card is open");
     assert.equal(canResume(card), false);
     assert.equal(taskNeedsMe(failedNew), false);
   });
 
-  check("workflow stepper: current step, skipped research, failed step, all done", () => {
-    const states = (task: Task) => workflowSteps(task).map((s) => `${s.label}:${s.state}`);
-    assert.deepEqual(states(run(make("w", {}), ["picked_up", "delegated"])), [
-      "Brief:done", "Plan:current", "Research:pending", "Build:pending", "QA:pending", "Review:pending", "Done:pending",
-    ]);
-    const skipped = run(make("s", {}), ["picked_up", "delegated", "research_skipped"]);
-    assert.deepEqual(states(skipped).slice(0, 4), ["Brief:done", "Plan:done", "Research:skipped", "Build:current"]);
-    const failed = run(make("f", {}), ["picked_up", "delegated", "plan_ready", "findings_published", "submitted", "abort"]);
-    assert.deepEqual(states(failed).slice(3, 6), ["Build:done", "QA:failed", "Review:pending"]);
-    const done = { ...run(make("d", {}), ["picked_up", "delegated", "research_skipped", "submitted", "tests_passed", "approved"]), endReason: "done" as const };
-    assert.deepEqual(states(done), ["Brief:done", "Plan:done", "Research:skipped", "Build:done", "QA:done", "Review:done", "Done:done"]);
-    assert.ok(workflowSteps(waitLow).every((s) => s.state === "pending"));
+  check("needs me: an open brief or change card; Change task only while running and once at a time", () => {
+    const ask = { id: "ask_1", kind: "brief" as const, lane: "task" as const, agentId: "proj_1:orchestrator", youAsked: "x", text: "brief", restartFrom: null, restartWhy: null, createdAt: t0, outcome: "open" as const, reply: null, closedAt: null };
+    const awaiting = make("a", { phase: "awaiting_approval", asks: [ask] });
+    assert.equal(taskNeedsMe(awaiting), true);
+    assert.equal(taskNeedsMe({ ...awaiting, asks: [{ ...ask, outcome: "started" }] }), false);
+    const held = make("h", { phase: "implementation", blockedReason: "Waiting for your OK on a change" });
+    assert.equal(canResume(held), false, "apply or discard instead");
+    assert.equal(waitsForMe(held), true);
+    assert.equal(canChange(active), true);
+    assert.equal(canChange(waitLow), false);
+    assert.equal(canChange(awaiting), false);
+    assert.equal(canChange(make("s", { phase: "review", assignedAgentId: "proj_1:orchestrator" })), false, "not during the summary");
+    const change = { id: "change_1", text: "x", requestedAt: t0, outcome: "pending" as const, restartFrom: null, detail: null, closedAt: null };
+    assert.equal(canChange({ ...active, changes: [change] }), false, "one change at a time");
+    assert.equal(canChange({ ...active, changes: [{ ...change, outcome: "applied" }] }), true);
+    assert.equal(shortTaskId("task_3f9a2c11aa00bb22"), "T-3F9A2C");
   });
 }
 

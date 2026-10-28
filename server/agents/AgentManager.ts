@@ -3,7 +3,7 @@
 // Task inputs (pipeline handoffs) share the same FIFO queue as my chat messages;
 // they run in the task's own Claude session and report how they ended to the TaskHooks.
 
-import { CONFIG } from "../../src/shared/config.ts";
+import { CONFIG, type ModelSetting } from "../../src/shared/config.ts";
 import type { AgentStatus, EffortLevel } from "../../src/shared/domain/agentTypes.ts";
 import { ROLE_DEFINITIONS } from "../../src/shared/domain/roles.ts";
 import type { Chat, ChatAuthor, ChatMessage, TokenUsage } from "../../src/shared/domain/chatTypes.ts";
@@ -60,6 +60,8 @@ export interface TaskHooks {
   /** The task's Claude session for this agent, or null for a new one. */
   sessionFor(taskId: string, agentId: string): string | null;
   setSession(taskId: string, agentId: string, sessionId: string): void;
+  /** The task's model and effort for this agent (chosen in New task); null: the agent's own. */
+  modelFor(taskId: string, agentId: string): ModelSetting | null;
   /** The agent's activity while it reads the input, e.g. "Reading plan from Pronelio Maximus". */
   activityFor(input: AgentInput): string;
   onInputStarted(input: AgentInput): void;
@@ -242,10 +244,16 @@ export class AgentManager {
     return removed;
   }
 
-  /** The agent running an input of this task, or null. */
-  runningTaskAgent(taskId: string): string | null {
-    for (const [agentId, slot] of this.slots) if (slot.queue.current?.taskId === taskId) return agentId;
-    return null;
+  /** The agents running an input of this task (a step, and sONion Ring on a change). */
+  runningTaskAgents(taskId: string): string[] {
+    const agents: string[] = [];
+    for (const [agentId, slot] of this.slots) if (slot.queue.current?.taskId === taskId) agents.push(agentId);
+    return agents;
+  }
+
+  /** Is this input running now (not waiting in its agent's queue)? */
+  isRunning(agentId: string, inputId: string): boolean {
+    return this.slots.get(agentId)?.queue.current?.id === inputId;
   }
 
   private enqueueInput(
@@ -437,8 +445,8 @@ export class AgentManager {
           taskId !== null && hooks !== null ? hooks.sessionFor(taskId, agentId) : chatId === null ? null : this.world.getChat(chatId).claudeSessionId,
         cwd: this.world.getProjectRoot(agent.projectId),
         chatOnly: taskId === null ? agent.chatOnly : false,
-        model: agent.model,
-        effort: agent.effort,
+        // A task step runs with the task's setting; my chat picker never changes a task.
+        ...(taskId !== null && hooks !== null ? (hooks.modelFor(taskId, agentId) ?? { model: agent.model, effort: agent.effort }) : { model: agent.model, effort: agent.effort }),
       },
       {
         addNote: (text) => {
