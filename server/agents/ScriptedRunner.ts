@@ -164,10 +164,13 @@ export class ScriptedRunner implements AgentRunner {
     const live = () => generation === this.generation;
     const abort = new AbortController();
     this.abort = abort;
+    // No timer for 0 ms: on Windows each one takes ~15 ms, which adds up per streamed word.
     const wait = (ms: number) =>
-      new Promise<void>((resolve) => {
-        this.timers.push(setTimeout(resolve, ms));
-      });
+      ms <= 0
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            this.timers.push(setTimeout(resolve, ms));
+          });
 
     void (async () => {
       const { agent, broker } = this.options;

@@ -25,7 +25,8 @@ export const NO_NOTES_LINE = "Team notes: none yet.";
 export const OLDER_NOTES_LINE = `(Older notes are in ${CONFIG.notesPath}.)`;
 
 function readPrompt(dir: string, file: string): string {
-  return readFileSync(join(dir, file), "utf8").trimEnd();
+  // git may check the files out with CRLF on Windows.
+  return readFileSync(join(dir, file), "utf8").replace(/\r\n/g, "\n").trimEnd();
 }
 
 /**
