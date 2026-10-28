@@ -8,7 +8,12 @@
         "run",
         "dev"
       ],
-      "port": 3000
+      "port": 3000,
+      "env": {
+        "TEMP": "D:\\3d-ai-agent\\.tmp",
+        "TMP": "D:\\3d-ai-agent\\.tmp",
+        "NODE_COMPILE_CACHE": "D:\\3d-ai-agent\\.tmp\\node-compile-cache"
+      }
     },
     {
       "name": "scripted-dev",
