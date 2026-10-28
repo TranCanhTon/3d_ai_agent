@@ -38,6 +38,24 @@ import {
 } from "../src/shared/domain/handoff.ts";
 import type { ClientCommand, ServerMessage, WorldSnapshot } from "../src/shared/protocol/protocol.ts";
 import { parseClientMessage, parseCommandResult, parseServerMessage } from "../src/shared/protocol/schemas.ts";
+import {
+  canResume,
+  formatTokens,
+  initials,
+  isLongChat,
+  matchesActivityFilter,
+  matchesTaskFilter,
+  parseNoteLine,
+  parseNotes,
+  permissionPreview,
+  relativeTime,
+  sortTasks,
+  taskFilterCounts,
+  taskGroup,
+  taskNeedsMe,
+  workflowSteps,
+} from "../src/shared/ui/present.ts";
+import type { AgentEvent } from "../src/shared/events/eventTypes.ts";
 
 let failures = 0;
 
@@ -903,6 +921,136 @@ check("command results validate", () => {
   assert.ok(parseCommandResult("getSnapshot", snapshot).ok);
   assert.ok(parseCommandResult("stopAgent", undefined).ok);
   assert.equal(parseCommandResult("submitTask", { id: "x" }).ok, false);
+});
+
+// ── 7. UI helpers ───────────────────────────────────────────────────────────
+describe("7. UI helpers");
+
+{
+  const t0 = 1_700_000_000_000;
+  const make = (id: string, patch: Partial<Task>): Task => ({ ...createTask(id, { projectId: "proj_1", title: id }, t0), ...patch });
+  const active = make("active", { phase: "implementation", updatedAt: t0 + 50 });
+  const paused = make("paused", { phase: "testing", blockedReason: "Stopped by you", status: "blocked", updatedAt: t0 + 10 });
+  const waitLow = make("wait-low", { priority: "low", createdAt: t0 + 1 });
+  const waitHighNew = make("wait-high-new", { priority: "high", createdAt: t0 + 5 });
+  const waitHighOld = make("wait-high-old", { priority: "high", createdAt: t0 + 2 });
+  const doneOld = make("done-old", { phase: "done", endReason: "done", completedAt: t0 + 100 });
+  const failedNew = make("failed-new", { phase: "failed", endReason: "failed", completedAt: t0 + 200 });
+  const cancelled = make("cancelled", { phase: "failed", endReason: "cancelled", completedAt: t0 + 150 });
+  const all = [doneOld, waitLow, cancelled, paused, waitHighNew, failedNew, active, waitHighOld];
+
+  check("sortTasks: active (newest change first), waiting by priority then oldest, ended newest first", () => {
+    assert.deepEqual(
+      sortTasks(all).map((t) => t.id),
+      ["active", "paused", "wait-high-old", "wait-high-new", "wait-low", "failed-new", "cancelled", "done-old"],
+    );
+  });
+
+  check("task groups and filters: paused is active, failed and cancelled are done", () => {
+    assert.equal(taskGroup(paused), "active");
+    assert.equal(taskGroup(waitLow), "waiting");
+    assert.equal(taskGroup(cancelled), "done");
+    assert.deepEqual(taskFilterCounts(all), { all: 8, active: 2, waiting: 3, done: 3 });
+    assert.deepEqual(all.filter((t) => matchesTaskFilter(t, "waiting")).map((t) => t.id).sort(), ["wait-high-new", "wait-high-old", "wait-low"]);
+    assert.equal(all.filter((t) => matchesTaskFilter(t, "all")).length, 8);
+  });
+
+  check("needs me / Resume: a question needs an answer (no Resume), a card is not a pause to resume", () => {
+    const question = make("q", { phase: "intake", blockedReason: "Waiting for your answer", question: "Which page?" });
+    const card = make("c", { phase: "implementation", blockedReason: "Waiting for your OK" });
+    assert.equal(taskNeedsMe(question), true);
+    assert.equal(canResume(question), false);
+    assert.equal(taskNeedsMe(paused), true);
+    assert.equal(canResume(paused), true);
+    assert.equal(taskNeedsMe(card), false);
+    assert.equal(canResume(card), false);
+    assert.equal(taskNeedsMe(failedNew), false);
+  });
+
+  check("workflow stepper: current step, skipped research, failed step, all done", () => {
+    const states = (task: Task) => workflowSteps(task).map((s) => `${s.label}:${s.state}`);
+    assert.deepEqual(states(run(make("w", {}), ["picked_up", "delegated"])), [
+      "Brief:done", "Plan:current", "Research:pending", "Build:pending", "QA:pending", "Review:pending", "Done:pending",
+    ]);
+    const skipped = run(make("s", {}), ["picked_up", "delegated", "research_skipped"]);
+    assert.deepEqual(states(skipped).slice(0, 4), ["Brief:done", "Plan:done", "Research:skipped", "Build:current"]);
+    const failed = run(make("f", {}), ["picked_up", "delegated", "plan_ready", "findings_published", "submitted", "abort"]);
+    assert.deepEqual(states(failed).slice(3, 6), ["Build:done", "QA:failed", "Review:pending"]);
+    const done = { ...run(make("d", {}), ["picked_up", "delegated", "research_skipped", "submitted", "tests_passed", "approved"]), endReason: "done" as const };
+    assert.deepEqual(states(done), ["Brief:done", "Plan:done", "Research:skipped", "Build:done", "QA:done", "Review:done", "Done:done"]);
+    assert.ok(workflowSteps(waitLow).every((s) => s.state === "pending"));
+  });
+}
+
+check("relativeTime: just now, minutes, hours, yesterday, days, then the date", () => {
+  const now = new Date(2026, 9, 28, 12, 0, 0).getTime();
+  assert.equal(relativeTime(now - 10_000, now), "just now");
+  assert.equal(relativeTime(now + 5_000, now), "just now", "a clock a little ahead is not the future");
+  assert.equal(relativeTime(now - 5 * 60_000, now), "5m ago");
+  assert.equal(relativeTime(now - 3 * 3_600_000, now), "3h ago");
+  assert.equal(relativeTime(now - 26 * 3_600_000, now), "yesterday");
+  assert.equal(relativeTime(now - 4 * 86_400_000, now), "4d ago");
+  assert.equal(relativeTime(new Date(2026, 8, 1, 9, 0).getTime(), now), "2026-09-01");
+});
+
+check("formatTokens and the long chat hint", () => {
+  assert.equal(formatTokens(950), "950");
+  assert.equal(formatTokens(1500), "1.5k");
+  assert.equal(formatTokens(45_210), "45k");
+  assert.equal(formatTokens(1_200_000), "1.2M");
+  assert.equal(isLongChat(null), false);
+  assert.equal(isLongChat(CONFIG.longChatTokens), false);
+  assert.equal(isLongChat(CONFIG.longChatTokens + 1), true);
+});
+
+check("notes lines: task log, pinned by you, you, an agent, plain text; the file header is dropped", () => {
+  assert.deepEqual(parseNoteLine('- Task "Add x" done: Added x (task log, 2026-10-27)'), {
+    kind: "task_log", text: 'Task "Add x" done: Added x', by: "task log", date: "2026-10-27",
+  });
+  assert.equal(parseNoteLine("- Use Tailwind (pinned by you, 2026-10-27)")?.kind, "pinned");
+  assert.equal(parseNoteLine("- Deploys go out on Fridays (you, 2026-10-28)")?.kind, "mine");
+  assert.deepEqual(parseNoteLine("- Tests live in scripts/ (STD Dren, 2026-10-26)"), {
+    kind: "agent", text: "Tests live in scripts/", by: "STD Dren", date: "2026-10-26",
+  });
+  assert.equal(parseNoteLine("- Text with (parens) inside (Drater, 2026-10-26)")?.text, "Text with (parens) inside");
+  assert.deepEqual(parseNoteLine("Some hand written line"), { kind: "text", text: "Some hand written line", by: null, date: null });
+  assert.equal(parseNoteLine("   "), null);
+  const lines = parseNotes("# Team notes\r\n\r\n- A (you, 2026-10-28)\n## Later\n- B (Rabies, 2026-10-28)\n");
+  assert.deepEqual(lines.map((l) => `${l.kind}:${l.text}`), ["mine:A", "heading:Later", "agent:B"]);
+});
+
+check("permission previews: full command, Edit old → new, Write content, JSON otherwise, all cut to size", () => {
+  assert.equal(permissionPreview({ toolName: "Bash", input: { command: "npm install left-pad && npm test" } }).command, "npm install left-pad && npm test");
+  const edit = permissionPreview({ toolName: "Edit", input: { file_path: "D:\\x\\a.ts", old_string: "a", new_string: "b".repeat(700) } });
+  assert.equal(edit.filePath, "D:\\x\\a.ts");
+  assert.equal(edit.edit?.oldText, "a");
+  assert.equal(edit.edit?.newText.length, 601, "600 characters and an ellipsis");
+  assert.equal(edit.json, null);
+  const write = permissionPreview({ toolName: "Write", input: { file_path: "b.ts", content: "export {}" } });
+  assert.deepEqual([write.filePath, write.content, write.edit], ["b.ts", "export {}", null]);
+  const other = permissionPreview({ toolName: "WebFetch", input: { url: "https://example.com" } });
+  assert.equal(other.json, '{\n  "url": "https://example.com"\n}');
+  assert.equal(permissionPreview({ toolName: "Bash", input: {} }).json, "{}", "no command: show what there is");
+});
+
+check("activity filters: handoffs, permissions, problems", () => {
+  const event = (type: AgentEvent["type"], patch: Partial<AgentEvent> = {}): AgentEvent => ({
+    id: "e", type, timestamp: 0, message: "", severity: "info", feed: true, ...patch,
+  });
+  assert.ok(matchesActivityFilter(event("task.assigned", { targetAgentId: "a" }), "handoffs"));
+  assert.ok(!matchesActivityFilter(event("agent.message"), "handoffs"), "a message without a target is not a handoff");
+  assert.ok(matchesActivityFilter(event("permission.resolved"), "permissions"));
+  assert.ok(matchesActivityFilter(event("agent.error", { severity: "error" }), "problems"));
+  assert.ok(matchesActivityFilter(event("task.paused", { severity: "warning" }), "problems"));
+  assert.ok(!matchesActivityFilter(event("task.created"), "problems"));
+  assert.ok(matchesActivityFilter(event("task.created"), "all"));
+});
+
+check("initials from display names", () => {
+  assert.equal(initials("STD Dren"), "SD");
+  assert.equal(initials("sONion Ring"), "SR");
+  assert.equal(initials("Drater"), "DR");
+  assert.equal(initials("Quantarino Archilles"), "QA");
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────
