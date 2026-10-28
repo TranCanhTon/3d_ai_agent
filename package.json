@@ -7,22 +7,28 @@
     "node": ">=22.6"
   },
   "scripts": {
-    "dev": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts\"",
+    "dev": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts < NUL\"",
+    "dev:scripted": "concurrently -k -n web,server -c blue,magenta \"next dev\" \"tsx watch --no-cache server/index.ts --runner=scripted < NUL\"",
     "dev:web": "next dev",
     "dev:server": "tsx watch --no-cache server/index.ts",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src scripts server",
-    "test": "node --experimental-strip-types --no-warnings scripts/test.ts && tsx --no-cache scripts/test-server.ts"
+    "test": "node --experimental-strip-types --no-warnings scripts/test.ts && tsx --no-cache scripts/test-server.ts && tsx --no-cache scripts/test-agents.ts && tsx --no-cache scripts/test-projects.ts && tsx --no-cache scripts/test-pipeline.ts",
+    "test:live": "tsx --no-cache scripts/test-live.ts",
+    "claude:login": "tsx --no-cache scripts/claude-login.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.310",
     "@react-three/drei": "^10.7.9",
     "@react-three/fiber": "^9.8.2",
     "lucide-react": "^1.61.0",
     "next": "~16.4.3",
     "react": "~19.3.1",
     "react-dom": "~19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "three": "^0.186.1",
     "ws": "^8.22.0",
     "zod": "^4.6.7",

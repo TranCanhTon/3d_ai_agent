@@ -9,6 +9,15 @@
         "dev"
       ],
       "port": 3000
+    },
+    {
+      "name": "scripted-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:scripted"
+      ],
+      "port": 3000
     }
   ]
 }

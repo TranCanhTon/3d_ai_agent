@@ -1,20 +1,53 @@
-import type { AgentStatus } from "../../src/shared/domain/agentTypes.ts";
+import type { AgentStatus, EffortLevel, RunModelInfo } from "../../src/shared/domain/agentTypes.ts";
+import type { TokenUsage } from "../../src/shared/domain/chatTypes.ts";
+import type { AgentRole } from "../../src/shared/domain/roles.ts";
+
+export interface AgentRunInput {
+  agentId: string;
+  text: string;
+  /** Session to resume, or null for a new one. */
+  sessionId: string | null;
+  /** The project folder the agent works in. */
+  cwd: string;
+  /** No tools at all for this run. */
+  chatOnly: boolean;
+  /** Claude model alias (one of config.models). */
+  model: string;
+  /** null = the model's default (no effort option). */
+  effort: EffortLevel | null;
+}
+
+export type ToolEvent =
+  | { phase: "started"; toolUseId: string; toolName: string; summary: string }
+  | { phase: "finished"; toolUseId: string; toolName: string; ok: boolean };
 
 export interface AgentRunCallbacks {
   onStatus(status: AgentStatus, activity: string): void;
   onDelta(textChunk: string): void;
   onComplete(fullText: string): void;
   onError(message: string): void;
+  /** The run's session id, to resume next time. */
+  onSession(sessionId: string): void;
+  onUsage(usage: TokenUsage): void;
+  onTool(event: ToolEvent): void;
+  /** Where the credential comes from ("none" = subscription login). */
+  onAuth(source: string): void;
+  /** What the run actually used, as Claude reports it; may be called again with a newer value. */
+  onRunInfo(info: RunModelInfo): void;
+  /** Subscription usage limit hit; resetsAt in epoch ms when known. */
+  onUsageLimit(resetsAt: number | null): void;
+  /** The add_note tool: appends to the project's notes. Returns the line written; throws on bad input. */
+  addNote(text: string): string;
 }
 
 /**
  * Runs one input for one agent at a time. AgentManager owns queueing and state;
- * a runner only turns an input into status changes and streamed text.
+ * a runner only turns an input into status changes, streamed text and tool events.
  * After stop() a runner must not call any callback for the stopped run.
  */
 export interface AgentRunner {
-  run(input: { agentId: string; text: string }, callbacks: AgentRunCallbacks): void;
+  run(input: AgentRunInput, callbacks: AgentRunCallbacks): void;
   stop(): void;
 }
 
-export type AgentRunnerFactory = (agent: { id: string; name: string }) => AgentRunner;
+export type AgentRunnerFactory = (agent: { id: string; name: string; role: AgentRole }) => AgentRunner;

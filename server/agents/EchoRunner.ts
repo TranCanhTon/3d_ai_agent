@@ -1,7 +1,7 @@
 // Temporary fake agent: echoes the input word by word. Replaced in phase 3.
 
 import { CONFIG } from "../../src/shared/config.ts";
-import type { AgentRunCallbacks, AgentRunner } from "./AgentRunner.ts";
+import type { AgentRunCallbacks, AgentRunInput, AgentRunner } from "./AgentRunner.ts";
 
 export class EchoRunner implements AgentRunner {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -13,7 +13,7 @@ export class EchoRunner implements AgentRunner {
     this.timing = timing;
   }
 
-  run(input: { agentId: string; text: string }, callbacks: AgentRunCallbacks): void {
+  run(input: AgentRunInput, callbacks: AgentRunCallbacks): void {
     this.stop();
     const fullText = `Echo from ${this.agentName}: ${input.text}`;
     const words = fullText.split(/(?<=\s)/);

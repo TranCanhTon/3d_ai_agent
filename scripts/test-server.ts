@@ -31,10 +31,13 @@ async function check(name: string, fn: () => Promise<void>) {
   }
 }
 
-// Token file lives in the project (.tmp/), never in the OS temp folder.
-const tmpDir = join(process.cwd(), ".tmp");
-mkdirSync(tmpDir, { recursive: true });
-const tokenPath = join(tmpDir, `test-session-token-${process.pid}`);
+// Everything lives in the project (.tmp/), never in the OS temp folder, the real data folder or D:\agent-sandbox:
+// a fake app folder, a folder browser root with the Sandbox in it, and a data folder.
+const tmpDir = join(process.cwd(), ".tmp", `test-server-${process.pid}`);
+const browseRoot = join(tmpDir, "drive");
+mkdirSync(join(tmpDir, "app"), { recursive: true });
+mkdirSync(browseRoot, { recursive: true });
+const tokenPath = join(tmpDir, "session-token");
 
 const server = await startServer({
   host: "127.0.0.1",
@@ -43,6 +46,11 @@ const server = await startServer({
   allowedOrigins: CONFIG.allowedOrigins,
   helloTimeoutMs: HELLO_TIMEOUT_MS,
   log: silentLogger,
+  runner: "echo", // npm test never calls Claude
+  appRoot: join(tmpDir, "app"),
+  dataDir: join(tmpDir, "data"),
+  folderBrowserRoot: browseRoot,
+  sandboxRoot: join(browseRoot, "sandbox"),
 });
 const token = readFileSync(tokenPath, "utf8");
 const url = `ws://127.0.0.1:${server.port}`;
@@ -207,6 +215,7 @@ await check("5. valid hello: snapshot with 1 project and 6 agents", async () => 
   assert.equal(snapshot.snapshot.projects[0]?.name, "Sandbox");
   assert.equal(snapshot.snapshot.agents.length, 6);
   assert.ok(snapshot.snapshot.agents.every((a) => a.status === "idle"));
+  assert.equal(snapshot.snapshot.runner, "echo");
   client.close();
 });
 
@@ -340,21 +349,37 @@ await check("9. invalid JSON and an unknown command do not take the server down"
   client.close();
 });
 
-await check("10. an unimplemented command (createProject) mentions phase 4", async () => {
+await check("10. task commands: submit, then clear errors for resume, answer and a second cancel", async () => {
   const client = await TestClient.authed();
-  const ack = await client.command("createProject", { name: "x", rootPath: "D:\\x" });
-  assert.equal(ack.ok, false);
-  assert.ok(!ack.ok && /phase 4/.test(ack.error), !ack.ok ? ack.error : "");
-  const submit = await client.command("submitTask", { projectId, title: "x" });
-  assert.ok(!submit.ok && /phase 5/.test(submit.error));
+  const blank = await client.command("submitTask", { projectId, title: "   " });
+  assert.ok(!blank.ok, "empty title");
+  const long = await client.command("submitTask", { projectId, title: "x".repeat(CONFIG.maxTaskTitleChars + 1) });
+  assert.ok(!long.ok, "title over maxTaskTitleChars");
+  const unknown = await client.command("submitTask", { projectId: "proj_nope", title: "x" });
+  assert.ok(!unknown.ok && /Unknown project/.test(unknown.error));
+
+  const submit = await client.command("submitTask", { projectId, title: "Add dark mode", priority: "high" });
+  assert.ok(submit.ok);
+  const taskId = (submit.result as { id: string }).id;
+  const resume = await client.command("resumeTask", { taskId });
+  assert.ok(!resume.ok && /not paused/.test(resume.error), resume.ok ? "" : resume.error);
+  const answer = await client.command("answerTask", { taskId, text: "x" });
+  assert.ok(!answer.ok && /no question/.test(answer.error));
+  const cancel = await client.command("cancelTask", { taskId });
+  assert.ok(cancel.ok);
+  const again = await client.command("cancelTask", { taskId });
+  assert.ok(!again.ok && /already ended/.test(again.error));
+  const ended = await client.waitFor((m) => (m.type === "event" && m.event.type === "task.cancelled" ? m.event : undefined));
+  assert.equal(ended.taskId, taskId);
+
   const permission = await client.command("respondPermission", { requestId: "p", decision: "allow" });
-  assert.ok(!permission.ok && /phase 3/.test(permission.error));
+  assert.ok(!permission.ok && /already answered/.test(permission.error), "respondPermission is implemented");
   client.close();
 });
 
 for (const socket of sockets) socket.terminate();
 await server.close();
-rmSync(tokenPath, { force: true });
+rmSync(tmpDir, { recursive: true, force: true });
 
 console.log(failures === 0 ? "\nAll server checks passed." : `\n${failures} server check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

@@ -3,13 +3,14 @@
 // drifts from the hand-written types in protocol.ts and src/shared/domain.
 
 import { z } from "zod";
-import { CONFIG } from "../config.ts";
-import { AGENT_STATUSES, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
-import { CHAT_MESSAGE_STATUSES, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
+import { AGENT_RUNNER_KINDS, CONFIG } from "../config.ts";
+import { AGENT_STATUSES, EFFORT_LEVELS, STATION_IDS, type AgentState } from "../domain/agentTypes.ts";
+import { CHAT_MESSAGE_STATUSES, type Chat, type ChatAuthor, type ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import { AGENT_ROLES } from "../domain/roles.ts";
 import {
+  TASK_END_REASONS,
   TASK_PRIORITIES,
   TASK_STATUSES,
   WORKFLOW_PHASES,
@@ -18,6 +19,7 @@ import {
 } from "../domain/taskTypes.ts";
 import { EVENT_SEVERITIES, EVENT_TYPES, type AgentEvent } from "../events/eventTypes.ts";
 import {
+  CHAT_VIEWS,
   COMM_LINK_KINDS,
   type ClientCommand,
   type ClientMessage,
@@ -51,7 +53,11 @@ export const agentStateSchema = z.object({
   activity: z.string(),
   location: z.enum(STATION_IDS),
   currentTaskId: z.string().nullable(),
-  claudeSessionId: z.string().nullable(),
+  activeChatId: id,
+  chatOnly: z.boolean(),
+  model: z.string(),
+  effort: z.enum(EFFORT_LEVELS).nullable(),
+  lastRun: z.object({ model: z.string(), effort: z.string().nullable() }).nullable(),
   busy: z.boolean(),
   queuedCount: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
@@ -83,12 +89,18 @@ export const taskSchema = z.object({
     }),
   ),
   blockedReason: z.string().nullable(),
+  sessions: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
+  outputs: z.partialRecord(z.enum(AGENT_ROLES), z.string()),
+  question: z.string().nullable(),
+  endReason: z.enum(TASK_END_REASONS).nullable(),
+  summary: z.string().nullable(),
 });
 
 export const chatAuthorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user") }),
   z.object({ kind: z.literal("agent") }),
   z.object({ kind: z.literal("handoff"), fromAgentId: id }),
+  z.object({ kind: z.literal("tool"), toolName: z.string() }),
   z.object({ kind: z.literal("system") }),
 ]);
 
@@ -99,9 +111,23 @@ export const chatMessageSchema = z.object({
   author: chatAuthorSchema,
   text: z.string(),
   taskId: z.string().nullable(),
+  chatId: z.string().nullable(),
   pinned: z.boolean(),
   status: z.enum(CHAT_MESSAGE_STATUSES),
   createdAt: epochMs,
+  usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative() }).optional(),
+});
+
+export const chatSchema = z.object({
+  id,
+  projectId: id,
+  agentId: id,
+  title: z.string(),
+  claudeSessionId: z.string().nullable(),
+  createdAt: epochMs,
+  updatedAt: epochMs,
+  messageCount: z.number().int().nonnegative(),
+  contextTokens: z.number().int().nonnegative().nullable(),
 });
 
 export const permissionRequestSchema = z.object({
@@ -145,11 +171,18 @@ export const worldSnapshotSchema = z.object({
   links: z.array(commLinkSchema),
   pendingPermissions: z.array(permissionRequestSchema),
   usage: z.object({ limited: z.boolean(), resetsAt: epochMs.nullable() }),
+  auth: z.object({ source: z.string().nullable() }),
+  runner: z.enum(AGENT_RUNNER_KINDS),
 });
 
 // ── Client → server (strict: unknown keys are rejected) ─────────────────────
 
 const text = z.string().min(1).max(CONFIG.maxMessageChars);
+
+/** One of config.models. */
+export function isModelId(value: string): boolean {
+  return CONFIG.models.some((model) => model.id === value);
+}
 
 function command<N extends string, A extends z.ZodRawShape>(name: N, args: A) {
   return z.strictObject({ name: z.literal(name), args: z.strictObject(args) });
@@ -158,15 +191,24 @@ function command<N extends string, A extends z.ZodRawShape>(name: N, args: A) {
 export const clientCommandSchema = z.discriminatedUnion("name", [
   command("listFolders", { path: z.string().min(1).optional() }),
   command("createProject", {
-    name: z.string().trim().min(1).max(CONFIG.maxTaskTitleChars),
+    name: z.string().trim().min(1).max(CONFIG.projectNameMaxChars),
     rootPath: z.string().min(1),
     initGit: z.boolean().optional(),
   }),
   command("archiveProject", { projectId: id }),
-  command("sendMessage", { agentId: id, text }),
+  command("restoreProject", { projectId: id }),
+  command("sendMessage", { agentId: id, text, chatId: id.optional() }),
   command("cancelQueued", { agentId: id, messageId: id }),
   command("stopAgent", { agentId: id }),
-  command("resetAgentSession", { agentId: id }),
+  command("newChat", { agentId: id }),
+  command("openChat", { agentId: id, chatId: id }),
+  command("listChats", { agentId: id }),
+  command("setChatOnly", { agentId: id, chatOnly: z.boolean() }),
+  command("setAgentModel", {
+    agentId: id,
+    model: z.string().refine((value) => isModelId(value), { message: "Unknown model" }),
+    effort: z.enum(EFFORT_LEVELS).nullable(),
+  }),
   command("submitTask", {
     projectId: id,
     title: z.string().trim().min(1).max(CONFIG.maxTaskTitleChars),
@@ -175,12 +217,17 @@ export const clientCommandSchema = z.discriminatedUnion("name", [
   }),
   command("cancelTask", { taskId: id }),
   command("resumeTask", { taskId: id }),
+  command("answerTask", { taskId: id, text }),
   command("respondPermission", { requestId: id, decision: z.enum(["allow", "deny"]) }),
-  command("pinToNotes", { messageId: id }),
+  command("pinToNotes", { messageId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
+  command("getNotes", { projectId: id }),
+  command("addNote", { projectId: id, text: z.string().trim().min(1).max(CONFIG.noteMaxChars) }),
   command("getChatHistory", {
     agentId: id,
     before: id.optional(),
     limit: z.number().int().min(1).max(CONFIG.chatHistoryMaxLimit).optional(),
+    view: z.enum(CHAT_VIEWS).optional(),
+    chatId: id.optional(),
   }),
   command("getSnapshot", {}),
 ]);
@@ -211,19 +258,35 @@ export const commandResultSchemas = {
   listFolders: z.object({
     path: z.string(),
     parent: z.string().nullable(),
-    entries: z.array(z.object({ name: z.string(), path: z.string(), isGitRepo: z.boolean() })),
+    entries: z.array(
+      z.object({
+        name: z.string(),
+        path: z.string(),
+        isGitRepo: z.boolean(),
+        hasProject: z.boolean(),
+        blocked: z.string().nullable(),
+      }),
+    ),
   }),
   createProject: projectSchema,
   archiveProject: z.null(),
+  restoreProject: z.null(),
   sendMessage: chatMessageSchema,
   cancelQueued: z.null(),
   stopAgent: z.null(),
-  resetAgentSession: z.null(),
+  newChat: chatSchema,
+  openChat: z.null(),
+  listChats: z.array(chatSchema),
+  setChatOnly: z.null(),
+  setAgentModel: z.null(),
   submitTask: taskSchema,
   cancelTask: z.null(),
   resumeTask: z.null(),
+  answerTask: z.null(),
   respondPermission: z.null(),
   pinToNotes: z.null(),
+  getNotes: z.string(),
+  addNote: z.null(),
   getChatHistory: z.object({ messages: z.array(chatMessageSchema), hasMore: z.boolean() }),
   getSnapshot: worldSnapshotSchema,
 };
@@ -279,6 +342,7 @@ export type SchemaTypeChecks = [
   Expect<Equals<z.infer<typeof taskSchema>, Task>>,
   Expect<Equals<z.infer<typeof chatAuthorSchema>, ChatAuthor>>,
   Expect<Equals<z.infer<typeof chatMessageSchema>, ChatMessage>>,
+  Expect<Equals<z.infer<typeof chatSchema>, Chat>>,
   Expect<Equals<z.infer<typeof permissionRequestSchema>, PermissionRequest>>,
   Expect<Equals<z.infer<typeof agentEventSchema>, AgentEvent>>,
   Expect<Equals<z.infer<typeof commLinkSchema>, CommLink>>,

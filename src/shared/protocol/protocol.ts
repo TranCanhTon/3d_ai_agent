@@ -1,8 +1,9 @@
 // WebSocket contract between the browser and the Node server.
 // schemas.ts holds the matching zod schemas and fails typecheck if they drift.
 
-import type { AgentState } from "../domain/agentTypes.ts";
-import type { ChatMessage } from "../domain/chatTypes.ts";
+import type { AgentRunnerKind } from "../config.ts";
+import type { AgentState, EffortLevel } from "../domain/agentTypes.ts";
+import type { Chat, ChatMessage } from "../domain/chatTypes.ts";
 import type { PermissionDecision, PermissionRequest } from "../domain/permissions.ts";
 import type { Project } from "../domain/projectTypes.ts";
 import type { Task, TaskPriority } from "../domain/taskTypes.ts";
@@ -28,6 +29,11 @@ export interface UsageState {
   resetsAt: number | null;
 }
 
+/** Where the agents' Claude credential comes from, as Claude Code reports it ("none" = claude.ai login). */
+export interface AuthState {
+  source: string | null;
+}
+
 /** Chat history is not included; see getChatHistory. */
 export interface WorldSnapshot {
   serverTime: number;
@@ -37,36 +43,67 @@ export interface WorldSnapshot {
   links: CommLink[];
   pendingPermissions: PermissionRequest[];
   usage: UsageState;
+  auth: AuthState;
+  /** Which runner answers chat messages. */
+  runner: AgentRunnerKind;
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
 
 /** Arguments of each command. Kept in `args` because createProject has its own `name`. */
 export interface CommandArgsMap {
-  /** Folder browser; defaults to the home directory. */
+  /** Folder browser; defaults to config.folderBrowserRoot and never leaves it. */
   listFolders: { path?: string };
   createProject: { name: string; rootPath: string; initGit?: boolean };
+  /** Hides a project; its data is kept and its agents refuse messages. */
   archiveProject: { projectId: string };
-  sendMessage: { agentId: string; text: string };
+  restoreProject: { projectId: string };
+  /** Goes to `chatId` (default: the active chat), which becomes the active chat. */
+  sendMessage: { agentId: string; text: string; chatId?: string };
   cancelQueued: { agentId: string; messageId: string };
   stopAgent: { agentId: string };
-  resetAgentSession: { agentId: string };
+  /** Starts a new chat (a new Claude session) and makes it active; returns the active chat when it is still empty. */
+  newChat: { agentId: string };
+  /** Makes an earlier chat active again; the next message resumes its session. */
+  openChat: { agentId: string; chatId: string };
+  /** The agent's chats, newest first. */
+  listChats: { agentId: string };
+  setChatOnly: { agentId: string; chatOnly: boolean };
+  /** Takes effect from the agent's next run (chat or task step); a running one is not changed. */
+  setAgentModel: { agentId: string; model: string; effort: EffortLevel | null };
   submitTask: { projectId: string; title: string; description?: string; priority?: TaskPriority };
   cancelTask: { taskId: string };
+  /** Only for a paused task without a question. */
   resumeTask: { taskId: string };
+  /** My answer to sONion Ring's question; the task continues. */
+  answerTask: { taskId: string; text: string };
   respondPermission: { requestId: string; decision: PermissionDecision };
-  pinToNotes: { messageId: string };
-  /** `before` is a message id; returns messages older than it, newest last. */
-  getChatHistory: { agentId: string; before?: string; limit?: number };
+  /** `text` is what I edited from the message (at most noteMaxChars). */
+  pinToNotes: { messageId: string; text: string };
+  getNotes: { projectId: string };
+  /** A note written by me: `- <text> (you, YYYY-MM-DD)`, at most noteMaxChars. */
+  addNote: { projectId: string; text: string };
+  /**
+   * `before` is a message id; returns messages older than it, newest last.
+   * view "chat" (default): one of my chats (`chatId`, default the active one); "tasks": the agent's task messages.
+   */
+  getChatHistory: { agentId: string; before?: string; limit?: number; view?: ChatView; chatId?: string };
   getSnapshot: Record<string, never>;
 }
 
 export type CommandName = keyof CommandArgsMap;
 
+export const CHAT_VIEWS = ["chat", "tasks"] as const;
+export type ChatView = (typeof CHAT_VIEWS)[number];
+
 export interface FolderEntry {
   name: string;
   path: string;
   isGitRepo: boolean;
+  /** A project (archived included) already uses exactly this folder. */
+  hasProject: boolean;
+  /** Why this folder cannot become a project, or null. */
+  blocked: string | null;
 }
 
 export interface FolderListing {
@@ -86,15 +123,24 @@ export interface CommandResultMap {
   listFolders: FolderListing;
   createProject: Project;
   archiveProject: null;
+  restoreProject: null;
   sendMessage: ChatMessage;
   cancelQueued: null;
   stopAgent: null;
-  resetAgentSession: null;
+  newChat: Chat;
+  openChat: null;
+  listChats: Chat[];
+  setChatOnly: null;
+  setAgentModel: null;
   submitTask: Task;
   cancelTask: null;
   resumeTask: null;
+  answerTask: null;
   respondPermission: null;
   pinToNotes: null;
+  /** The notes file's content. */
+  getNotes: string;
+  addNote: null;
   getChatHistory: ChatHistoryPage;
   getSnapshot: WorldSnapshot;
 }

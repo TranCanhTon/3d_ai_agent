@@ -245,6 +245,9 @@ export class WebSocketAgentBackend implements AgentBackend {
   archiveProject(args: CommandArgsMap["archiveProject"]) {
     return this.run("archiveProject", args);
   }
+  restoreProject(args: CommandArgsMap["restoreProject"]) {
+    return this.run("restoreProject", args);
+  }
   sendMessage(args: CommandArgsMap["sendMessage"]) {
     return this.run("sendMessage", args);
   }
@@ -254,8 +257,20 @@ export class WebSocketAgentBackend implements AgentBackend {
   stopAgent(args: CommandArgsMap["stopAgent"]) {
     return this.run("stopAgent", args);
   }
-  resetAgentSession(args: CommandArgsMap["resetAgentSession"]) {
-    return this.run("resetAgentSession", args);
+  newChat(args: CommandArgsMap["newChat"]) {
+    return this.run("newChat", args);
+  }
+  openChat(args: CommandArgsMap["openChat"]) {
+    return this.run("openChat", args);
+  }
+  listChats(args: CommandArgsMap["listChats"]) {
+    return this.run("listChats", args);
+  }
+  setChatOnly(args: CommandArgsMap["setChatOnly"]) {
+    return this.run("setChatOnly", args);
+  }
+  setAgentModel(args: CommandArgsMap["setAgentModel"]) {
+    return this.run("setAgentModel", args);
   }
   submitTask(args: CommandArgsMap["submitTask"]) {
     return this.run("submitTask", args);
@@ -266,11 +281,20 @@ export class WebSocketAgentBackend implements AgentBackend {
   resumeTask(args: CommandArgsMap["resumeTask"]) {
     return this.run("resumeTask", args);
   }
+  answerTask(args: CommandArgsMap["answerTask"]) {
+    return this.run("answerTask", args);
+  }
   respondPermission(args: CommandArgsMap["respondPermission"]) {
     return this.run("respondPermission", args);
   }
   pinToNotes(args: CommandArgsMap["pinToNotes"]) {
     return this.run("pinToNotes", args);
+  }
+  getNotes(args: CommandArgsMap["getNotes"]) {
+    return this.run("getNotes", args);
+  }
+  addNote(args: CommandArgsMap["addNote"]) {
+    return this.run("addNote", args);
   }
   getChatHistory(args: CommandArgsMap["getChatHistory"]) {
     return this.run("getChatHistory", args);

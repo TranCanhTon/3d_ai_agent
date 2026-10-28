@@ -3,12 +3,14 @@
 
 import { z } from "zod";
 import { AGENT_STATUSES } from "../domain/agentTypes.ts";
-import { chatMessageSchema } from "../protocol/schemas.ts";
+import { chatMessageSchema, chatSchema, permissionRequestSchema, taskSchema } from "../protocol/schemas.ts";
 import type { AgentEvent, AgentEventType } from "./eventTypes.ts";
 
 export const eventPayloadSchemas = {
   /** chat.message_created and chat.message_completed carry the whole message. */
   chatMessage: z.object({ message: chatMessageSchema }),
+  /** chat.started (a new chat) and chat.updated (title, count, context size, session): the chat after the change. */
+  chat: z.object({ chat: chatSchema }),
   /** chat.message_delta: text to append to a streaming message. */
   chatDelta: z.object({ messageId: z.string(), delta: z.string() }),
   /** agent.status_changed */
@@ -19,12 +21,31 @@ export const eventPayloadSchemas = {
     startedMessageId: z.string().optional(),
     cancelledMessageId: z.string().optional(),
   }),
+  /** agent.tool_started / agent.tool_finished (`ok` only on finished). */
+  tool: z.object({ toolUseId: z.string(), toolName: z.string(), summary: z.string(), ok: z.boolean().optional() }),
+  /** permission.requested */
+  permissionRequested: z.object({ request: permissionRequestSchema }),
+  /** permission.resolved */
+  permissionResolved: z.object({ requestId: z.string(), decision: z.enum(["allow", "deny"]) }),
+  /** usage.limit_reached */
+  usageLimit: z.object({ resetsAt: z.number().nullable() }),
+  /** notes.updated: the line appended to the project's notes file. */
+  notesUpdated: z.object({ line: z.string() }),
+  /** task.*, plan.created, research.completed, implementation.*, qa.*, review.*: the task after the change. */
+  task: z.object({ task: taskSchema }),
 };
 
 export type ChatMessagePayload = z.infer<typeof eventPayloadSchemas.chatMessage>;
+export type ChatPayload = z.infer<typeof eventPayloadSchemas.chat>;
 export type ChatDeltaPayload = z.infer<typeof eventPayloadSchemas.chatDelta>;
 export type AgentStatusPayload = z.infer<typeof eventPayloadSchemas.agentStatus>;
 export type QueueChangedPayload = z.infer<typeof eventPayloadSchemas.queueChanged>;
+export type ToolPayload = z.infer<typeof eventPayloadSchemas.tool>;
+export type PermissionRequestedPayload = z.infer<typeof eventPayloadSchemas.permissionRequested>;
+export type PermissionResolvedPayload = z.infer<typeof eventPayloadSchemas.permissionResolved>;
+export type UsageLimitPayload = z.infer<typeof eventPayloadSchemas.usageLimit>;
+export type NotesUpdatedPayload = z.infer<typeof eventPayloadSchemas.notesUpdated>;
+export type TaskPayload = z.infer<typeof eventPayloadSchemas.task>;
 
 /** Returns the event's metadata if the event has the given type and the metadata matches. */
 export function readPayload<T>(event: AgentEvent, type: AgentEventType | AgentEventType[], schema: z.ZodType<T>): T | null {
