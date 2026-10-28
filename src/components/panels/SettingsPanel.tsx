@@ -1,15 +1,15 @@
 "use client";
 
-// Read only: connection, usage, the team's models and the rules from CONFIG.
+// Rendering quality, then read only: connection, usage, the team's models and the rules from CONFIG.
 
 import type { ReactNode } from "react";
 import { CONFIG } from "@/shared/config.ts";
 import { ROLE_DEFINITIONS } from "@/shared/domain/roles.ts";
 import { DEFAULT_WS_URL } from "@/client/WebSocketAgentBackend.ts";
 import { clockTime } from "@/shared/ui/present.ts";
-import { useWorldStore } from "@/state/useWorldStore.ts";
+import { useWorldStore, type Quality, type QualitySource } from "@/state/useWorldStore.ts";
 import { useProjectAgents } from "../hooks.ts";
-import { Avatar, Section } from "../ui.tsx";
+import { Avatar, Section, Segmented } from "../ui.tsx";
 import { PanelBody } from "./SidePanel.tsx";
 
 function Rows({ rows }: { rows: [string, ReactNode][] }) {
@@ -29,6 +29,35 @@ function List({ items }: { items: readonly string[] }) {
   return <span className="font-mono text-[11px] leading-relaxed">{items.join(", ")}</span>;
 }
 
+const QUALITY_SOURCE: Record<QualitySource, string> = {
+  default: "Chosen at start for this computer",
+  user: "Set by you",
+  auto: "Switched automatically: the frame rate dropped",
+  url: "Set by ?quality= in the address",
+};
+
+function Rendering() {
+  const quality = useWorldStore((s) => s.quality);
+  const source = useWorldStore((s) => s.qualitySource);
+  return (
+    <Section title="Rendering">
+      <div className="well space-y-2 rounded-xl px-3 py-2.5 text-xs">
+        <Segmented<Quality>
+          label="Rendering quality"
+          value={quality}
+          options={[
+            { value: "high", label: "High quality" },
+            { value: "low", label: "Performance" },
+          ]}
+          onChange={(value) => useWorldStore.getState().setQuality(value, "user")}
+        />
+        <p className="text-mist-500">Switches to Performance automatically if the frame rate drops.</p>
+        <p className="text-mist-300">{QUALITY_SOURCE[source]}</p>
+      </div>
+    </Section>
+  );
+}
+
 export function SettingsPanel() {
   const status = useWorldStore((s) => s.connectionStatus);
   const runner = useWorldStore((s) => s.snapshot?.runner ?? null);
@@ -39,6 +68,8 @@ export function SettingsPanel() {
 
   return (
     <PanelBody>
+      <Rendering />
+
       <Section title="Connection">
         <Rows
           rows={[

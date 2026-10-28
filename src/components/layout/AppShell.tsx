@@ -1,10 +1,10 @@
 "use client";
 
-// The app: a full viewport world area (the 3D office mounts here later) with the
-// floating UI on top. The shell measures the floating parts and writes viewInsets
+// The app: a full viewport world area (the 3D office) with the floating UI on top. The shell measures the floating parts and writes viewInsets
 // to the store so the camera can keep the office in the free area.
 
 import { PanelRightOpen } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useEffect, useRef } from "react";
 import { connectBackend } from "@/client/backendClient.ts";
 import { useWorldStore } from "@/state/useWorldStore.ts";
@@ -16,6 +16,10 @@ import { PermissionStack } from "../permissions/PermissionStack.tsx";
 import { LoadingScreen } from "./LoadingScreen.tsx";
 import { NavRail } from "./NavRail.tsx";
 import { TopBar } from "./TopBar.tsx";
+import { CameraBar } from "@/world/CameraBar.tsx";
+import { DebugOverlay } from "@/world/DebugOverlay.tsx";
+
+const WorldCanvas = dynamic(() => import("@/world/WorldCanvas.tsx"), { ssr: false });
 
 function useViewInsets(nav: React.RefObject<HTMLElement | null>, top: React.RefObject<HTMLElement | null>, side: React.RefObject<HTMLElement | null>) {
   const collapsed = useWorldStore((s) => s.panelCollapsed);
@@ -52,8 +56,11 @@ function useShortcuts() {
       if (event.key === "Escape") {
         if (store.dialog !== null) store.setDialog(null);
         else if (isTyping(event.target)) return;
-        else if (store.selectedTaskId !== null) store.setSelectedTask(null);
-        else if (store.selectedAgentId !== null) store.setSelectedAgent(null);
+        else {
+          store.requestCamera({ preset: "overview" });
+          if (store.selectedTaskId !== null) store.setSelectedTask(null);
+          else if (store.selectedAgentId !== null) store.setSelectedAgent(null);
+        }
         return;
       }
       if (isTyping(event.target) || store.dialog !== null) return;
@@ -87,7 +94,11 @@ export function AppShell() {
           background:
             "radial-gradient(120% 90% at 50% 30%, rgb(38 48 65 / 0.55), transparent 60%), radial-gradient(80% 60% at 80% 100%, rgb(124 196 214 / 0.08), transparent 70%), linear-gradient(180deg, #0a0e14, #06080c)",
         }}
-      />
+      >
+        <WorldCanvas />
+      </div>
+      <CameraBar />
+      <DebugOverlay />
       <div className="pointer-events-none absolute inset-0 flex gap-3 p-3">
         <NavRail ref={nav} />
         <div className="flex min-w-0 flex-1 flex-col gap-3">

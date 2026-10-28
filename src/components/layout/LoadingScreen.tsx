@@ -1,6 +1,6 @@
 "use client";
 
-// Shown until the first snapshot (at least 1.1 s, so the steps can be read).
+// Shown until the first snapshot and the office's first frames (at least 1.1 s, so the steps can be read).
 // After 6 s without the server it says so; reconnecting keeps going behind it.
 
 import { Bot, Check, LoaderCircle } from "lucide-react";
@@ -8,13 +8,14 @@ import { useEffect, useState } from "react";
 import { useWorldStore } from "@/state/useWorldStore.ts";
 import { cx } from "../ui.tsx";
 
-const STEPS = ["Connecting to server", "Loading projects", "Waking up agents"];
+const STEPS = ["Connecting to server", "Loading projects", "Waking up agents", "Building the office"];
 const MIN_MS = 1100;
 const UNREACHABLE_MS = 6000;
 const FADE_MS = 400;
 
 export function LoadingScreen() {
   const firstSnapshotAt = useWorldStore((s) => s.firstSnapshotAt);
+  const sceneReady = useWorldStore((s) => s.sceneReady);
   const [elapsed, setElapsed] = useState(0);
   const [gone, setGone] = useState(false);
 
@@ -24,7 +25,8 @@ export function LoadingScreen() {
     return () => clearInterval(timer);
   }, []);
 
-  const ready = firstSnapshotAt !== null && elapsed >= MIN_MS;
+  const timed = elapsed >= MIN_MS;
+  const ready = firstSnapshotAt !== null && sceneReady && timed;
   useEffect(() => {
     if (!ready) return;
     const timer = setTimeout(() => setGone(true), FADE_MS);
@@ -32,9 +34,10 @@ export function LoadingScreen() {
   }, [ready]);
 
   if (gone) return null;
-  // Each step ticks over after its share of the minimum time; the last waits for the snapshot.
-  const stepMs = MIN_MS / STEPS.length;
-  const done = (index: number) => (index < STEPS.length - 1 ? elapsed >= (index + 1) * stepMs : ready);
+  // The first steps tick over after their share of the minimum time; then the snapshot, then the office.
+  const stepMs = MIN_MS / (STEPS.length - 1);
+  const done = (index: number) =>
+    index < STEPS.length - 2 ? elapsed >= (index + 1) * stepMs : index === STEPS.length - 2 ? firstSnapshotAt !== null && timed : ready;
   const unreachable = firstSnapshotAt === null && elapsed >= UNREACHABLE_MS;
 
   return (

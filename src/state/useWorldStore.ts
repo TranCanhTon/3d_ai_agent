@@ -10,6 +10,7 @@ import type { Chat, ChatMessage } from "@/shared/domain/chatTypes.ts";
 import { eventPayloadSchemas, readPayload } from "@/shared/events/eventPayloads.ts";
 import type { AgentEvent } from "@/shared/events/eventTypes.ts";
 import type { ChatView, WorldSnapshot } from "@/shared/protocol/protocol.ts";
+import type { CameraPresetId, Vec3 } from "@/shared/ui/cameraPresets.ts";
 
 /** Key in `chats`: one of my chats with an agent, or the agent's task messages (its Tasks tab). */
 export function chatKey(agentId: string, view: ChatView, chatId: string | null = null): string {
@@ -32,6 +33,31 @@ export interface ViewInsets {
   top: number;
   right: number;
   bottom: number;
+}
+
+export type Quality = "high" | "low";
+/** What set the quality: the start rule, my choice in Settings, the frame rate drop, or ?quality= in the URL. */
+export type QualitySource = "default" | "user" | "auto" | "url";
+
+/** A camera move; a new nonce starts it. A preset, or a point to focus at `distance`. */
+export interface CameraRequest {
+  nonce: number;
+  preset?: CameraPresetId;
+  focus?: Vec3;
+  distance?: number;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/** ?quality=high|low forces it; otherwise low on small machines or with reduced motion. */
+function initialQuality(): { quality: Quality; qualitySource: QualitySource } {
+  if (typeof window === "undefined") return { quality: "high", qualitySource: "default" };
+  const forced = new URLSearchParams(window.location.search).get("quality");
+  if (forced === "high" || forced === "low") return { quality: forced, qualitySource: "url" };
+  const cores = navigator.hardwareConcurrency ?? 8;
+  return { quality: cores <= CONFIG.world.lowQualityMaxCores || prefersReducedMotion() ? "low" : "high", qualitySource: "default" };
 }
 
 export interface ChatPage {
@@ -76,6 +102,20 @@ export interface WorldStore {
   /** Bumped to flash the permission stack (the top bar badge). */
   permissionFlash: number;
 
+  // 3D office
+  quality: Quality;
+  qualitySource: QualitySource;
+  reducedMotion: boolean;
+  /** The office has rendered its first frames (or failed to start). */
+  sceneReady: boolean;
+  /** "station:<id>" under the pointer. */
+  hovered: string | null;
+  cameraRequest: CameraRequest | null;
+  /** The preset the camera went to last; null after a drag or a focus. */
+  activePreset: CameraPresetId | null;
+  /** The agent whose desk has the floor outline. Follows the selection; a click on empty space clears it. */
+  deskHighlight: string | null;
+
   /** Per chatKey, oldest first. */
   chats: Record<string, ChatMessage[]>;
   chatPages: Record<string, ChatPage>;
@@ -97,6 +137,12 @@ export interface WorldStore {
   setDialog(dialog: Dialog): void;
   setViewInsets(insets: ViewInsets): void;
   flashPermissions(): void;
+  setQuality(quality: Quality, source: QualitySource): void;
+  setSceneReady(): void;
+  setHovered(hovered: string | null): void;
+  requestCamera(request: Omit<CameraRequest, "nonce">): void;
+  setActivePreset(preset: CameraPresetId | null): void;
+  setDeskHighlight(agentId: string | null): void;
   /** Merges a loaded history page (older messages first) with messages that arrived live. */
   setHistory(key: string, messages: ChatMessage[], hasMore: boolean): void;
   setChatList(agentId: string, chats: Chat[]): void;
@@ -211,6 +257,13 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
     dialog: null,
     viewInsets: { left: 0, top: 0, right: 0, bottom: 0 },
     permissionFlash: 0,
+    ...initialQuality(),
+    reducedMotion: prefersReducedMotion(),
+    sceneReady: false,
+    hovered: null,
+    cameraRequest: null,
+    activePreset: "overview",
+    deskHighlight: null,
     chats: {},
     chatPages: {},
     chatLists: {},
@@ -247,12 +300,13 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
         return {
           selectedProjectId,
           selectedAgentId: agent?.projectId === selectedProjectId ? state.selectedAgentId : null,
+          deskHighlight: agent?.projectId === selectedProjectId ? state.deskHighlight : null,
           selectedTaskId: task?.projectId === selectedProjectId ? state.selectedTaskId : null,
         };
       });
     },
 
-    setSelectedAgent: (selectedAgentId) => set({ selectedAgentId }),
+    setSelectedAgent: (selectedAgentId) => set({ selectedAgentId, deskHighlight: selectedAgentId }),
     setSelectedTask: (selectedTaskId) => set({ selectedTaskId }),
     setActiveTab: (activeTab) => set({ activeTab, panelCollapsed: false }),
     setAgentTab: (agentTab) => set({ agentTab }),
@@ -264,6 +318,24 @@ export const useWorldStore = create<WorldStore>()((set, get) => {
       set({ viewInsets });
     },
     flashPermissions: () => set((state) => ({ permissionFlash: state.permissionFlash + 1 })),
+    setQuality: (quality, qualitySource) => set({ quality, qualitySource }),
+    setSceneReady: () => {
+      if (!get().sceneReady) set({ sceneReady: true });
+    },
+    setHovered: (hovered) => {
+      if (get().hovered !== hovered) set({ hovered });
+    },
+    requestCamera: (request) =>
+      set((state) => ({
+        cameraRequest: { ...request, nonce: (state.cameraRequest?.nonce ?? 0) + 1 },
+        activePreset: request.preset ?? null,
+      })),
+    setActivePreset: (activePreset) => {
+      if (get().activePreset !== activePreset) set({ activePreset });
+    },
+    setDeskHighlight: (deskHighlight) => {
+      if (get().deskHighlight !== deskHighlight) set({ deskHighlight });
+    },
 
     setHistory: (key, messages, hasMore) =>
       set((state) => {

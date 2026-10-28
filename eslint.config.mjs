@@ -39,6 +39,14 @@ export default defineConfig([
       "no-restricted-imports": ["error", { patterns: nodeOnly }],
     },
   },
+  {
+    // The 3D office mutates three.js objects (materials, textures, the camera) in
+    // effects and useFrame by design; React never renders those values.
+    files: ["src/world/**/*.{ts,tsx}"],
+    rules: {
+      "react-hooks/immutability": "off",
+    },
+  },
   globalIgnores([
     ".next/**",
     "out/**",

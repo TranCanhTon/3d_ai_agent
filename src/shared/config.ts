@@ -60,6 +60,27 @@ export interface ModelSetting {
   effort: EffortLevel | null;
 }
 
+/** Rendering settings for the 3D office, per quality where they differ. */
+export interface WorldSettings {
+  /** Start in low quality on machines with this many logical cores or fewer. */
+  lowQualityMaxCores: number;
+  /** Device pixel ratio range [min, max]. */
+  dpr: { high: readonly [number, number]; low: readonly [number, number] };
+  shadowMapSize: number;
+  skylineTowers: { high: number; low: number };
+  dustMotes: { high: number; low: number };
+  /** Rendered frames before the loading screen lets the office show. */
+  readyFrames: number;
+  /** A pointer that moved more than this between down and up was a drag, not a click. */
+  clickTolerancePx: number;
+  /** Camera distance when it focuses a desk. */
+  focusDistance: number;
+  /** Exponential damping rates (1/s) of camera moves. */
+  cameraDamping: { target: number; distance: number; angle: number };
+  /** The debug overlay (?debug=1) refreshes this often. */
+  debugRefreshMs: number;
+}
+
 export interface AppConfig {
   serverHost: string;
   serverPort: number;
@@ -132,6 +153,9 @@ export interface AppConfig {
   /** React updates from snapshots at most this often, unless an agent's status/busy/queue changed. */
   snapshotThrottleMs: number;
   maxStoredEvents: number;
+
+  // ── 3D office ──
+  world: WorldSettings;
 
   // ── Claude agents (phase 3) ──
   /** Which runner answers chat messages. `--runner=<kind>` or the AGENT_RUNNER env var overrides it; tests force "echo". */
@@ -249,6 +273,18 @@ export const CONFIG: AppConfig = {
   reconnectBackoffMs: [500, 1000, 2000, 5000],
   snapshotThrottleMs: 160,
   maxStoredEvents: 200,
+  world: {
+    lowQualityMaxCores: 4,
+    dpr: { high: [1, 1.75], low: [1, 1.2] },
+    shadowMapSize: 2048,
+    skylineTowers: { high: 260, low: 120 },
+    dustMotes: { high: 260, low: 90 },
+    readyFrames: 3,
+    clickTolerancePx: 5,
+    focusDistance: 7.5,
+    cameraDamping: { target: 4, distance: 2, angle: 3 },
+    debugRefreshMs: 500,
+  },
 
   agentRunner: "claude",
   sandboxRoot: "D:\\agent-sandbox",

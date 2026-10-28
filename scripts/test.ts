@@ -56,6 +56,23 @@ import {
   workflowSteps,
 } from "../src/shared/ui/present.ts";
 import type { AgentEvent } from "../src/shared/events/eventTypes.ts";
+import { STATION_IDS } from "../src/shared/domain/agentTypes.ts";
+import {
+  CORRIDOR_X,
+  CORRIDOR_Z,
+  FLOOR,
+  HUB_CENTER,
+  insidePartition,
+  pathLength,
+  PARTITIONS,
+  PLANTS,
+  route,
+  RING_SEATS,
+  slotFor,
+  stationOwner,
+  STATIONS,
+} from "../src/shared/domain/worldLayout.ts";
+import { CAMERA_LIMITS, CAMERA_PRESETS, fitFactor, targetInLimits } from "../src/shared/ui/cameraPresets.ts";
 
 let failures = 0;
 
@@ -1051,6 +1068,92 @@ check("initials from display names", () => {
   assert.equal(initials("sONion Ring"), "SR");
   assert.equal(initials("Drater"), "DR");
   assert.equal(initials("Quantarino Archilles"), "QA");
+});
+
+// ── 3D office layout ────────────────────────────────────────────────────────
+describe("world layout");
+
+const allSlots = () => STATION_IDS.flatMap((id) => STATIONS[id].slots.map((slot) => ({ id, slot })));
+
+check("every stand slot lies inside the floor", () => {
+  for (const { id, slot } of allSlots()) {
+    assert.ok(slot.x > FLOOR.minX && slot.x < FLOOR.maxX && slot.z > FLOOR.minZ && slot.z < FLOOR.maxZ, `${id} (${slot.x}, ${slot.z})`);
+  }
+});
+
+check("ring stations have 6 slots exactly r from the centre, facing it", () => {
+  for (const id of ["collab", "lounge"] as const) {
+    const station = STATIONS[id];
+    assert.equal(station.slots.length, RING_SEATS);
+    for (const slot of station.slots) {
+      assert.ok(Math.abs(Math.hypot(slot.x - station.center.x, slot.z - station.center.z) - (station.ringRadius ?? 0)) < 1e-9);
+      const ahead = { x: slot.x + Math.sin(slot.facing), z: slot.z + Math.cos(slot.facing) };
+      assert.ok(Math.hypot(ahead.x - station.center.x, ahead.z - station.center.z) < (station.ringRadius ?? 0), "faces inward");
+    }
+  }
+  assert.deepEqual(slotFor("collab", 7), STATIONS.collab.slots[1], "seat index wraps");
+  assert.deepEqual(slotFor("planning", 3), STATIONS.planning.slots[0], "other stations use their first slot");
+});
+
+check("desks sit 1.2 m behind their stand slot; the hub console is at HUB_CENTER", () => {
+  for (const id of ["ops", "research", "product", "dev", "testing", "review"] as const) {
+    const { center, slots, kind } = STATIONS[id];
+    assert.equal(kind, "desk");
+    assert.ok(Math.abs(slots[0]!.z - center.z - 1.2) < 1e-9 && slots[0]!.x === center.x, id);
+  }
+  assert.deepEqual(STATIONS.hub.center, HUB_CENTER);
+});
+
+check("every role's home station exists and has a desk or console; ops has no owner", () => {
+  for (const role of AGENT_ROLES) {
+    const station = STATIONS[ROLE_DEFINITIONS[role].homeStation];
+    assert.ok(station.kind === "desk" || station.kind === "console", role);
+    assert.equal(stationOwner(station.id), role);
+  }
+  assert.equal(stationOwner("ops"), null);
+});
+
+check("route() goes through the corridor and ends at the target; pathLength of a line is its length", () => {
+  const path = route(slotFor("research"), slotFor("lounge", 2));
+  assert.ok(path.some((p) => p.z === CORRIDOR_Z));
+  assert.deepEqual(path.at(-1), { x: slotFor("lounge", 2).x, z: slotFor("lounge", 2).z });
+  assert.equal(pathLength([{ x: 0, z: 0 }, { x: 3, z: 4 }]), 5);
+  assert.equal(pathLength(route({ x: 1, z: CORRIDOR_Z }, { x: 4, z: CORRIDOR_Z })), 3, "no detour along the corridor");
+});
+
+check("no stand slot, corridor point, route or plant is inside a partition", () => {
+  for (const { id, slot } of allSlots()) assert.ok(!insidePartition(slot), `${id} slot`);
+  for (let x = CORRIDOR_X.min; x <= CORRIDOR_X.max; x += 0.05) assert.ok(!insidePartition({ x, z: CORRIDOR_Z }), `corridor at x ${x}`);
+  // Routes run along x = slot.x between the slot and the corridor.
+  for (const { id, slot } of allSlots()) {
+    const [a, b] = [Math.min(slot.z, CORRIDOR_Z), Math.max(slot.z, CORRIDOR_Z)];
+    for (let z = a; z <= b; z += 0.05) assert.ok(!insidePartition({ x: slot.x, z }), `the way to ${id} at (${slot.x}, ${z.toFixed(2)})`);
+  }
+  for (const plant of PLANTS) assert.ok(!insidePartition(plant), `plant at (${plant.x}, ${plant.z})`);
+  assert.ok(PARTITIONS.length >= 3);
+});
+
+check("every camera preset target is inside CAMERA_LIMITS", () => {
+  for (const preset of Object.values(CAMERA_PRESETS)) {
+    assert.ok(targetInLimits(preset.target), preset.id);
+    const distance = Math.hypot(preset.position.x - preset.target.x, preset.position.y - preset.target.y, preset.position.z - preset.target.z);
+    assert.ok(distance >= CAMERA_LIMITS.minDistance && distance <= CAMERA_LIMITS.maxDistance, `${preset.id} distance`);
+    const polar = Math.acos((preset.position.y - preset.target.y) / distance);
+    assert.ok(polar >= CAMERA_LIMITS.minPolarAngle && polar <= CAMERA_LIMITS.maxPolarAngle, `${preset.id} polar ${polar}`);
+  }
+});
+
+check("fit factor stays in [1, 2.2] from no insets to a 400 px side panel, 1024 to 2560 px wide", () => {
+  for (let width = 1024; width <= 2560; width += 64) {
+    for (const height of [640, 768, 900, 1080, 1440]) {
+      for (const right of [0, 100, 200, 300, 400]) {
+        const f = fitFactor(width, height, { left: right === 0 ? 0 : 64, top: right === 0 ? 0 : 64, right, bottom: 0 });
+        assert.ok(f >= 1 && f <= 2.2, `${width}x${height} right ${right}: ${f}`);
+      }
+    }
+  }
+  assert.equal(fitFactor(2560, 1440, { left: 0, top: 0, right: 0, bottom: 0 }), 1, "a wide free screen needs no extra distance");
+  assert.ok(fitFactor(1024, 768, { left: 64, top: 64, right: 412, bottom: 0 }) > 1.5, "a narrow free area moves the camera back");
 });
 
 // ── Summary ─────────────────────────────────────────────────────────────────
